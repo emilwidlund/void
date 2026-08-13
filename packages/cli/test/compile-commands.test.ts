@@ -1,4 +1,4 @@
-import { NodeContext } from "@effect/platform-node"
+import { NodeContext, NodeHttpClient } from "@effect/platform-node"
 import { expect, it } from "@effect/vitest"
 import { Console, Effect } from "effect"
 import * as path from "node:path"
@@ -33,7 +33,7 @@ it.effect("`void check` reports success for a valid config", () =>
     expect(logs).toHaveLength(1)
     expect(logs[0]).toContain("✓")
     expect(logs[0]).toContain("1 meter, 1 product")
-  }).pipe(Effect.provide(NodeContext.layer))
+  }).pipe(Effect.provide([NodeContext.layer, NodeHttpClient.layer]))
 )
 
 it.effect("`void check` renders diagnostics and sets a failing exit code", () =>
@@ -46,7 +46,7 @@ it.effect("`void check` renders diagnostics and sets a failing exit code", () =>
     expect(output).toContain("2 errors")
     expect(process.exitCode).toBe(1)
     process.exitCode = 0
-  }).pipe(Effect.provide(NodeContext.layer))
+  }).pipe(Effect.provide([NodeContext.layer, NodeHttpClient.layer]))
 )
 
 it.effect("`void build` prints the JSON IR", () =>
@@ -69,5 +69,5 @@ it.effect("`void build` prints the JSON IR", () =>
         }
       ]
     })
-  }).pipe(Effect.provide(NodeContext.layer))
+  }).pipe(Effect.provide([NodeContext.layer, NodeHttpClient.layer]))
 )

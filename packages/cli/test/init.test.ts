@@ -1,4 +1,4 @@
-import { NodeContext } from "@effect/platform-node"
+import { NodeContext, NodeHttpClient } from "@effect/platform-node"
 import { expect, it } from "@effect/vitest"
 import { Console, Effect } from "effect"
 import { cli } from "../src/Cli.js"
@@ -16,5 +16,5 @@ it.effect("`void init` prints hello world", () =>
     }
     yield* cli(["node", "void", "init"]).pipe(Console.withConsole(testConsole))
     expect(lines).toContain("hello world")
-  }).pipe(Effect.provide(NodeContext.layer))
+  }).pipe(Effect.provide([NodeContext.layer, NodeHttpClient.layer]))
 )

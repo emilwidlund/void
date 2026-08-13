@@ -57,12 +57,12 @@ describe("parse", () => {
     })
   })
 
-  it("parses a product with recurring and metered prices", () => {
+  it("parses a product with a recurring price and a meter binding", () => {
     const { diagnostics, file } = parseSource(`
       product pro {
         name "Pro Plan"
         price recurring monthly 29 USD
-        price metered api_calls {
+        meter api_calls {
           per_unit 10 USD_CENTS
           included 10_000
         }
@@ -72,20 +72,30 @@ describe("parse", () => {
     const product = file.decls[0]
     if (product?._tag !== "ProductDecl") throw new Error("expected product")
     expect(product.fields).toHaveLength(3)
-    const prices = product.fields.filter((f) => f._tag === "PriceField")
-    expect(prices[0]).toMatchObject({
-      price: { _tag: "RecurringPrice", interval: "monthly", money: { amount: "29", currency: "USD" } }
+    expect(product.fields[1]).toMatchObject({
+      _tag: "RecurringPriceField",
+      interval: "monthly",
+      money: { amount: "29", currency: "USD" }
     })
-    expect(prices[1]).toMatchObject({
-      price: {
-        _tag: "MeteredPrice",
-        meter: { name: "api_calls" },
-        fields: [
-          { _tag: "PerUnitField", money: { amount: "10", currency: "USD_CENTS" } },
-          { _tag: "IncludedField", value: "10000" }
-        ]
+    expect(product.fields[2]).toMatchObject({
+      _tag: "MeterBindingField",
+      meter: { name: "api_calls" },
+      fields: [
+        { _tag: "PerUnitField", money: { amount: "10", currency: "USD_CENTS" } },
+        { _tag: "IncludedField", value: "10000" }
+      ]
+    })
+  })
+
+  it("rejects the removed `price metered` syntax with a migration hint", () => {
+    const { diagnostics } = parseSource(`
+      product pro {
+        price metered api_calls { per_unit 1 USD }
       }
-    })
+    `)
+    expect(diagnostics[0]?.message).toContain(
+      "`price metered` has been replaced by `meter <id> { ... }`"
+    )
   })
 
   it("reports syntax errors with position info", () => {

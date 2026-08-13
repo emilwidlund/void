@@ -25,7 +25,7 @@ describe("compile", () => {
       product pro {
         name "Pro Plan"
         price recurring monthly 29 USD
-        price metered api_calls {
+        meter api_calls {
           per_unit 10 USD_CENTS
           included 10_000
         }
@@ -91,7 +91,7 @@ describe("compile", () => {
   it("fails with accumulated diagnostics on semantic errors", () => {
     const outcome = run(`
       product pro {
-        price metered nope { per_unit 1 USD }
+        meter nope { per_unit 1 USD }
       }
     `)
     expect(Either.isLeft(outcome)).toBe(true)

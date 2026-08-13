@@ -62,27 +62,24 @@ export interface Money {
 
 export type Interval = "monthly" | "yearly" | "weekly" | "daily"
 
-export type MeteredPriceField =
+export type PricingField =
   | { readonly _tag: "PerUnitField"; readonly money: Money; readonly span: Span }
   | { readonly _tag: "IncludedField"; readonly value: string; readonly span: Span }
 
-export type Price =
+export type ProductField =
+  | { readonly _tag: "NameField"; readonly value: string; readonly span: Span }
   | {
-      readonly _tag: "RecurringPrice"
+      readonly _tag: "RecurringPriceField"
       readonly interval: Interval
       readonly money: Money
       readonly span: Span
     }
   | {
-      readonly _tag: "MeteredPrice"
+      readonly _tag: "MeterBindingField"
       readonly meter: Identifier
-      readonly fields: ReadonlyArray<MeteredPriceField>
+      readonly fields: ReadonlyArray<PricingField>
       readonly span: Span
     }
-
-export type ProductField =
-  | { readonly _tag: "NameField"; readonly value: string; readonly span: Span }
-  | { readonly _tag: "PriceField"; readonly price: Price; readonly span: Span }
 
 export interface ProductDecl {
   readonly _tag: "ProductDecl"

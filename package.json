@@ -6,7 +6,8 @@
     "build": "turbo run build",
     "test": "turbo run test",
     "typecheck": "turbo run typecheck",
-    "dev": "turbo run dev"
+    "dev": "turbo run dev --filter=@void/server --filter=@void/web",
+    "simulate": "pnpm --filter @void/server simulate"
   },
   "devDependencies": {
     "turbo": "^2.10.9"

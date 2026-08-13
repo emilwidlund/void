@@ -7,9 +7,8 @@ import type {
   Interval,
   Literal,
   MeterField,
-  MeteredPriceField,
   Money,
-  Price,
+  PricingField,
   ProductField,
   PropertyPath,
   SourceFile
@@ -282,53 +281,60 @@ class Parser {
     }
     if (keyword === "price") {
       const start = this.advance()
-      const price = this.parsePrice()
-      return {
-        _tag: "PriceField",
-        price,
-        span: { start: start.span.start, end: price.span.end }
-      }
+      return this.parseRecurringPrice(start)
     }
-    return this.fail(`expected \`name\` or \`price\`, found ${this.describe(this.peek())}`)
+    if (keyword === "meter") {
+      const start = this.advance()
+      return this.parseMeterBinding(start)
+    }
+    return this.fail(
+      `expected \`name\`, \`price\` or \`meter\`, found ${this.describe(this.peek())}`
+    )
   }
 
-  private parsePrice(): Price {
-    const kind = this.expect("Ident", "`recurring` or `metered`")
-    if (kind.value === "recurring") {
-      const intervalToken = this.expect("Ident", `billing interval (${INTERVALS.join(", ")})`)
-      if (!(INTERVALS as ReadonlyArray<string>).includes(intervalToken.value)) {
-        this.fail(
-          `unknown interval \`${intervalToken.value}\` (expected one of: ${INTERVALS.join(", ")})`,
-          intervalToken.span
-        )
-      }
-      const money = this.parseMoney()
-      return {
-        _tag: "RecurringPrice",
-        interval: intervalToken.value as Interval,
-        money,
-        span: { start: kind.span.start, end: money.currencySpan.end }
-      }
+  private parseRecurringPrice(start: Token): ProductField {
+    const kind = this.expect("Ident", "`recurring`")
+    if (kind.value !== "recurring") {
+      this.fail(
+        kind.value === "metered"
+          ? "`price metered` has been replaced by `meter <id> { ... }` blocks on the product"
+          : `expected \`recurring\`, found \`${kind.text}\``,
+        kind.span
+      )
     }
-    if (kind.value === "metered") {
-      const meter = this.expectIdent("meter name")
-      this.expect("LBrace", "`{`")
-      const fields: Array<MeteredPriceField> = []
-      while (this.peek().kind !== "RBrace" && this.peek().kind !== "EOF") {
-        fields.push(this.parseMeteredPriceField())
-      }
-      const end = this.expect("RBrace", "`}`")
-      return {
-        _tag: "MeteredPrice",
-        meter,
-        fields,
-        span: { start: kind.span.start, end: end.span.end }
-      }
+    const intervalToken = this.expect("Ident", `billing interval (${INTERVALS.join(", ")})`)
+    if (!(INTERVALS as ReadonlyArray<string>).includes(intervalToken.value)) {
+      this.fail(
+        `unknown interval \`${intervalToken.value}\` (expected one of: ${INTERVALS.join(", ")})`,
+        intervalToken.span
+      )
     }
-    return this.fail(`expected \`recurring\` or \`metered\`, found \`${kind.text}\``, kind.span)
+    const money = this.parseMoney()
+    return {
+      _tag: "RecurringPriceField",
+      interval: intervalToken.value as Interval,
+      money,
+      span: { start: start.span.start, end: money.currencySpan.end }
+    }
   }
 
-  private parseMeteredPriceField(): MeteredPriceField {
+  private parseMeterBinding(start: Token): ProductField {
+    const meter = this.expectIdent("meter name")
+    this.expect("LBrace", "`{`")
+    const fields: Array<PricingField> = []
+    while (this.peek().kind !== "RBrace" && this.peek().kind !== "EOF") {
+      fields.push(this.parsePricingField())
+    }
+    const end = this.expect("RBrace", "`}`")
+    return {
+      _tag: "MeterBindingField",
+      meter,
+      fields,
+      span: { start: start.span.start, end: end.span.end }
+    }
+  }
+
+  private parsePricingField(): PricingField {
     const keyword = this.peekKeyword()
     if (keyword === "per_unit") {
       const start = this.advance()

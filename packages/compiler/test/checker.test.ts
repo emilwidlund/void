@@ -14,7 +14,7 @@ describe("check", () => {
       }
       product pro {
         name "Pro"
-        price metered api_calls { per_unit 10 USD_CENTS }
+        meter api_calls { per_unit 10 USD_CENTS }
       }
     `)
     expect(diagnostics).toEqual([])
@@ -42,7 +42,7 @@ describe("check", () => {
     const diagnostics = checkSource(`
       product pro {
         name "Pro"
-        price metered nope { per_unit 1 USD }
+        meter nope { per_unit 1 USD }
       }
     `)
     expect(diagnostics.map((d) => d.code)).toContain("VOID101")
@@ -51,7 +51,7 @@ describe("check", () => {
   it("reports missing product name and missing per_unit", () => {
     const diagnostics = checkSource(`
       meter m { aggregate count }
-      product pro { price metered m { } }
+      product pro { meter m { } }
     `)
     const codes = diagnostics.map((d) => d.code)
     expect(codes).toContain("VOID104")
@@ -70,7 +70,7 @@ describe("check", () => {
       meter m { aggregate count }
       product pro {
         name "Pro"
-        price metered m { per_unit 1 USD included 1.5 }
+        meter m { per_unit 1 USD included 1.5 }
       }
     `)
     expect(diagnostics.map((d) => d.code)).toContain("VOID107")

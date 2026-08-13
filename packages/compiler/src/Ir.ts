@@ -167,24 +167,23 @@ const emitProduct = (product: ProductDecl): IrProduct => {
       name = field.value
       continue
     }
-    const price = field.price
-    if (price._tag === "RecurringPrice") {
+    if (field._tag === "RecurringPriceField") {
       prices.push({
         type: "recurring",
-        interval: INTERVAL_MAP[price.interval],
-        amount: toIrMoney(price.money)
+        interval: INTERVAL_MAP[field.interval],
+        amount: toIrMoney(field.money)
       })
       continue
     }
     let perUnit: IrMoney = { currency: "USD", amount: "0" }
     let included = 0
-    for (const priceField of price.fields) {
-      if (priceField._tag === "PerUnitField") perUnit = toIrMoney(priceField.money)
-      else included = Number(priceField.value)
+    for (const pricingField of field.fields) {
+      if (pricingField._tag === "PerUnitField") perUnit = toIrMoney(pricingField.money)
+      else included = Number(pricingField.value)
     }
     prices.push({
       type: "metered",
-      meter: price.meter.name,
+      meter: field.meter.name,
       per_unit: perUnit,
       included_units: included
     })

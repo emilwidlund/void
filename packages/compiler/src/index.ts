@@ -11,6 +11,7 @@ export * from "./Ast.js"
 export * from "./Checker.js"
 export * from "./Diagnostic.js"
 export * from "./Ir.js"
+export * from "./IrSchema.js"
 export * from "./Lexer.js"
 export * from "./Parser.js"
 

@@ -6,7 +6,7 @@ meter api_calls {
 product pro {
   name "Pro Plan"
   price recurring monthly 29 USD
-  price metered api_calls {
+  meter api_calls {
     per_unit 10 USD_CENTS
     included 10_000
   }

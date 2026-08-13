@@ -68,25 +68,26 @@ const checkProduct = (
     diagnostics.push(D.error("VOID103", "duplicate `name` field", extra.span))
   }
 
-  const prices = product.fields.filter((f) => f._tag === "PriceField")
+  const prices = product.fields.filter(
+    (f) => f._tag === "RecurringPriceField" || f._tag === "MeterBindingField"
+  )
   if (prices.length === 0) {
     diagnostics.push(
       D.warning("VOID110", `product \`${product.id.name}\` has no prices`, product.id.span)
     )
   }
 
-  for (const field of prices) {
-    if (field._tag !== "PriceField") continue
-    const price = field.price
-    if (price._tag === "RecurringPrice") {
+  for (const price of prices) {
+    if (price._tag === "RecurringPriceField") {
       checkMoney(price.money, diagnostics)
       continue
     }
+    if (price._tag !== "MeterBindingField") continue
     if (!meterIds.has(price.meter.name)) {
       diagnostics.push(
         D.error(
           "VOID101",
-          `unknown meter \`${price.meter.name}\` referenced by metered price`,
+          `unknown meter \`${price.meter.name}\` (meters must be declared at the top level)`,
           price.meter.span
         )
       )
@@ -94,7 +95,7 @@ const checkProduct = (
     const perUnits = price.fields.filter((f) => f._tag === "PerUnitField")
     const includeds = price.fields.filter((f) => f._tag === "IncludedField")
     if (perUnits.length === 0) {
-      diagnostics.push(D.error("VOID109", "metered price is missing `per_unit`", price.span))
+      diagnostics.push(D.error("VOID109", "meter binding is missing `per_unit`", price.span))
     }
     for (const extra of perUnits.slice(1)) {
       diagnostics.push(D.error("VOID103", "duplicate `per_unit` field", extra.span))
