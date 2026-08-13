@@ -5,8 +5,8 @@ import {
   HttpServerRequest,
   HttpServerResponse
 } from "@effect/platform"
-import { Effect, Layer } from "effect"
-import { ConfigStore } from "./ConfigStore.js"
+import { Effect, Layer, Stream } from "effect"
+import { ConfigStore, describeActive } from "./ConfigStore.js"
 import { DeployPayloadSchema, IngestRequestSchema } from "./Domain.js"
 import { UsageEngine } from "./UsageEngine.js"
 
@@ -17,6 +17,10 @@ const deployHandler = Effect.gen(function* () {
   const payload = yield* HttpServerRequest.schemaBodyJson(DeployPayloadSchema)
   const store = yield* ConfigStore
   const outcome = yield* store.deploy(payload)
+  if (outcome.status === "accepted") {
+    const engine = yield* UsageEngine
+    yield* engine.notify
+  }
   return yield* HttpServerResponse.json(outcome, {
     status: outcome.status === "accepted" ? 201 : 200
   })
@@ -58,20 +62,28 @@ const usageHandler = Effect.gen(function* () {
 const configHandler = Effect.gen(function* () {
   const store = yield* ConfigStore
   const active = yield* store.active
-  if (active === undefined) {
-    return yield* HttpServerResponse.json({ active: null })
-  }
-  return yield* HttpServerResponse.json({
-    active: {
-      version: active.version,
-      checksum: active.checksum,
-      deployed_at: active.deployedAt,
-      source: active.source ?? null,
-      meters: active.ir.meters.length,
-      products: active.ir.products.length,
-      ir: active.ir
+  return yield* HttpServerResponse.json({ active: describeActive(active) })
+})
+
+const encoder = new TextEncoder()
+
+/** Server-sent events: a full snapshot on connect, then one per change. */
+const streamHandler = Effect.gen(function* () {
+  const engine = yield* UsageEngine
+  const events = engine.changes.pipe(
+    Stream.map((snapshot) => `data: ${JSON.stringify(snapshot)}\n\n`)
+  )
+  const keepAlive = Stream.tick("15 seconds").pipe(Stream.map(() => ": keep-alive\n\n"))
+  return HttpServerResponse.stream(
+    Stream.merge(events, keepAlive).pipe(Stream.map((chunk) => encoder.encode(chunk))),
+    {
+      contentType: "text/event-stream",
+      headers: {
+        "cache-control": "no-cache, no-transform",
+        connection: "keep-alive"
+      }
     }
-  })
+  )
 })
 
 export const router = HttpRouter.empty.pipe(
@@ -79,7 +91,8 @@ export const router = HttpRouter.empty.pipe(
   HttpRouter.post("/v1/deploy", deployHandler),
   HttpRouter.post("/v1/events", ingestHandler),
   HttpRouter.get("/v1/usage", usageHandler),
-  HttpRouter.get("/v1/config", configHandler)
+  HttpRouter.get("/v1/config", configHandler),
+  HttpRouter.get("/v1/stream", streamHandler)
 )
 
 export const ServicesLive = Layer.provideMerge(UsageEngine.Default, ConfigStore.Default)

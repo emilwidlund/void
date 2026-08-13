@@ -92,6 +92,8 @@ Endpoints:
   (count/sum/max/min/avg/unique), keyed per customer.
 - `GET /v1/usage` — aggregated usage per meter and customer.
 - `GET /v1/config` — the active config version.
+- `GET /v1/stream` — server-sent events: a full `{ usage, config }` snapshot
+  on connect, then one per ingested batch or deploy (the dashboard's live feed).
 
 State is in-memory for now — a real deployment would back the config store and
 usage state with a database.
@@ -104,9 +106,9 @@ and `VOID_SERVER_URL` override the defaults.
 ## Dashboard
 
 `pnpm dev` (or `pnpm --filter @void/web dev` alone) starts the dashboard on
-[localhost:3001](http://localhost:3001). It polls the void server every few
-seconds (set `VOID_SERVER_URL` if the server isn't on `localhost:4000`) and
-shows:
+[localhost:3001](http://localhost:3001). It subscribes to the server's SSE
+stream, so usage updates the moment events are ingested (set `VOID_SERVER_URL`
+if the server isn't on `localhost:4000`). It shows:
 
 - **Usage** — aggregated meter values per customer, live.
 - **Forecasts** — naive run-rate projection: usage velocity since the config

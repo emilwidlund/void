@@ -9,8 +9,13 @@ interface DashboardState {
   readonly lastUpdated: Date | null
 }
 
-/** Polls the void server (through the /api/void proxy) at a fixed interval. */
-export function useDashboard(intervalMs = 3000): DashboardState {
+/**
+ * Subscribes to the void server's SSE stream (through the /api/void proxy).
+ * Every message is a full snapshot ({ usage, config }); EventSource
+ * reconnects automatically and the server replays the current snapshot on
+ * connect, so missed updates self-heal.
+ */
+export function useDashboard(): DashboardState {
   const [state, setState] = useState<DashboardState>({
     data: null,
     error: null,
@@ -18,43 +23,24 @@ export function useDashboard(intervalMs = 3000): DashboardState {
   })
 
   useEffect(() => {
-    let cancelled = false
+    const source = new EventSource("/api/void/v1/stream")
 
-    const load = async () => {
-      try {
-        const [usageRes, configRes] = await Promise.all([
-          fetch("/api/void/v1/usage", { cache: "no-store" }),
-          fetch("/api/void/v1/config", { cache: "no-store" })
-        ])
-        if (!usageRes.ok || !configRes.ok) {
-          throw new Error(`void server responded ${usageRes.status}/${configRes.status}`)
-        }
-        const usage = (await usageRes.json()) as { usage: DashboardData["usage"] }
-        const config = (await configRes.json()) as { active: DashboardData["config"] }
-        if (!cancelled) {
-          setState({
-            data: { usage: usage.usage, config: config.active },
-            error: null,
-            lastUpdated: new Date()
-          })
-        }
-      } catch (error) {
-        if (!cancelled) {
-          setState((previous) => ({
-            ...previous,
-            error: error instanceof Error ? error.message : String(error)
-          }))
-        }
-      }
+    source.onmessage = (event: MessageEvent<string>) => {
+      const snapshot = JSON.parse(event.data) as DashboardData
+      setState({ data: snapshot, error: null, lastUpdated: new Date() })
     }
 
-    void load()
-    const id = setInterval(() => void load(), intervalMs)
+    source.onerror = () => {
+      setState((previous) => ({
+        ...previous,
+        error: "stream disconnected — reconnecting"
+      }))
+    }
+
     return () => {
-      cancelled = true
-      clearInterval(id)
+      source.close()
     }
-  }, [intervalMs])
+  }, [])
 
   return state
 }

@@ -1066,7 +1066,7 @@ var __TURBOPACK__imported__module__$5b$project$5d2f$node_modules$2f2e$pnpm$2f$ne
 var _s = __turbopack_context__.k.signature();
 "use client";
 ;
-function useDashboard(intervalMs = 3000) {
+function useDashboard() {
     _s();
     const [state, setState] = (0, __TURBOPACK__imported__module__$5b$project$5d2f$node_modules$2f2e$pnpm$2f$next$40$16$2e$3$2e$0_$40$types$2b$node$40$24$2e$13$2e$3_react$2d$dom$40$19$2e$2$2e$8_react$40$19$2e$2$2e$8_$5f$react$40$19$2e$2$2e$8$2f$node_modules$2f$next$2f$dist$2f$compiled$2f$react$2f$index$2e$js__$5b$app$2d$client$5d$__$28$ecmascript$29$__["useState"])({
         data: null,
@@ -1075,59 +1075,34 @@ function useDashboard(intervalMs = 3000) {
     });
     (0, __TURBOPACK__imported__module__$5b$project$5d2f$node_modules$2f2e$pnpm$2f$next$40$16$2e$3$2e$0_$40$types$2b$node$40$24$2e$13$2e$3_react$2d$dom$40$19$2e$2$2e$8_react$40$19$2e$2$2e$8_$5f$react$40$19$2e$2$2e$8$2f$node_modules$2f$next$2f$dist$2f$compiled$2f$react$2f$index$2e$js__$5b$app$2d$client$5d$__$28$ecmascript$29$__["useEffect"])({
         "useDashboard.useEffect": ()=>{
-            let cancelled = false;
-            const load = {
-                "useDashboard.useEffect.load": async ()=>{
-                    try {
-                        const [usageRes, configRes] = await Promise.all([
-                            fetch("/api/void/v1/usage", {
-                                cache: "no-store"
-                            }),
-                            fetch("/api/void/v1/config", {
-                                cache: "no-store"
-                            })
-                        ]);
-                        if (!usageRes.ok || !configRes.ok) {
-                            throw new Error(`void server responded ${usageRes.status}/${configRes.status}`);
-                        }
-                        const usage = await usageRes.json();
-                        const config = await configRes.json();
-                        if (!cancelled) {
-                            setState({
-                                data: {
-                                    usage: usage.usage,
-                                    config: config.active
-                                },
-                                error: null,
-                                lastUpdated: new Date()
-                            });
-                        }
-                    } catch (error) {
-                        if (!cancelled) {
-                            setState({
-                                "useDashboard.useEffect.load": (previous)=>({
-                                        ...previous,
-                                        error: error instanceof Error ? error.message : String(error)
-                                    })
-                            }["useDashboard.useEffect.load"]);
-                        }
-                    }
+            const source = new EventSource("/api/void/v1/stream");
+            source.onmessage = ({
+                "useDashboard.useEffect": (event)=>{
+                    const snapshot = JSON.parse(event.data);
+                    setState({
+                        data: snapshot,
+                        error: null,
+                        lastUpdated: new Date()
+                    });
                 }
-            }["useDashboard.useEffect.load"];
-            void load();
-            const id = setInterval({
-                "useDashboard.useEffect.id": ()=>void load()
-            }["useDashboard.useEffect.id"], intervalMs);
+            })["useDashboard.useEffect"];
+            source.onerror = ({
+                "useDashboard.useEffect": ()=>{
+                    setState({
+                        "useDashboard.useEffect": (previous)=>({
+                                ...previous,
+                                error: "stream disconnected — reconnecting"
+                            })
+                    }["useDashboard.useEffect"]);
+                }
+            })["useDashboard.useEffect"];
             return ({
                 "useDashboard.useEffect": ()=>{
-                    cancelled = true;
-                    clearInterval(id);
+                    source.close();
                 }
             })["useDashboard.useEffect"];
         }
-    }["useDashboard.useEffect"], [
-        intervalMs
-    ]);
+    }["useDashboard.useEffect"], []);
     return state;
 }
 _s(useDashboard, "rwgC9ST7BRzgdoetc3TW0tjbA58=");

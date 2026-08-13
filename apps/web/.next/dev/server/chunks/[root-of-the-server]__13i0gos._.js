@@ -72,10 +72,12 @@ const proxy = async (request, context)=>{
             body: request.method === "GET" || request.method === "HEAD" ? undefined : await request.text(),
             cache: "no-store"
         });
-        return new Response(await response.text(), {
+        // Pass the body through as a stream so SSE responses flow to the browser
+        return new Response(response.body, {
             status: response.status,
             headers: {
-                "content-type": response.headers.get("content-type") ?? "application/json"
+                "content-type": response.headers.get("content-type") ?? "application/json",
+                "cache-control": response.headers.get("cache-control") ?? "no-store"
             }
         });
     } catch  {

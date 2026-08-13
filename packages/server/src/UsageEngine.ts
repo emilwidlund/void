@@ -32,6 +32,7 @@ export class UsageEngine extends Effect.Service<UsageEngine>()("UsageEngine", {
   effect: Effect.gen(function* () {
     const configs = yield* ConfigStore
     const state = yield* Ref.make<UsageState>(new Map())
+    const changesHub = yield* PubSub.unbounded<Snapshot>()
 
     const ingest = (
       events: ReadonlyArray<IngestEvent>
@@ -60,6 +61,7 @@ export class UsageEngine extends Effect.Service<UsageEngine>()("UsageEngine", {
           }
           return next
         })
+        yield* notify
         return { ingested: events.length, matched }
       })
 
@@ -82,6 +84,24 @@ export class UsageEngine extends Effect.Service<UsageEngine>()("UsageEngine", {
       })
     )
 
-    return { ingest, usage } as const
+    const snapshot: Effect.Effect<Snapshot> = Effect.gen(function* () {
+      const rows = yield* usage
+      const active = yield* configs.active
+      return { usage: rows, config: describeActive(active) }
+    })
+
+    /** Publishes the current snapshot to all SSE subscribers. */
+    const notify = snapshot.pipe(
+      Effect.flatMap((current) => PubSub.publish(changesHub, current)),
+      Effect.asVoid
+    )
+
+    /** Emits the current snapshot immediately, then every subsequent change. */
+    const changes: Stream.Stream<Snapshot> = Stream.concat(
+      Stream.fromEffect(snapshot),
+      Stream.fromPubSub(changesHub)
+    )
+
+    return { ingest, usage, changes, notify } as const
   })
 }) {}

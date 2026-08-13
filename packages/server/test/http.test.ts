@@ -2,9 +2,10 @@ import { HttpClient, HttpClientRequest, HttpServer } from "@effect/platform"
 import { NodeHttpServer } from "@effect/platform-node"
 import { expect, it } from "@effect/vitest"
 import { compile } from "@void/compiler"
-import { Effect } from "effect"
+import { Effect, Fiber, Stream } from "effect"
 import { checksumIr } from "../src/ConfigStore.js"
 import { router, ServicesLive } from "../src/Http.js"
+import type { Snapshot } from "../src/UsageEngine.js"
 
 const source = `
   meter api_calls {
@@ -116,4 +117,59 @@ it.effect("deploy → ingest → usage flow", () =>
     Effect.provide(ServicesLive),
     Effect.provide(NodeHttpServer.layerTest)
   )
+)
+
+// Real clock (it.live) with a generous timeout: under parallel turbo runs the
+// event loop can be starved, and this test waits on actual SSE delivery.
+it.live("pushes snapshots over the SSE stream", () =>
+  Effect.gen(function* () {
+    yield* HttpServer.serveEffect(router)
+    const client = yield* HttpClient.HttpClient
+
+    const post = (url: string, body: unknown) =>
+      client
+        .execute(HttpClientRequest.post(url).pipe(HttpClientRequest.bodyUnsafeJson(body)))
+        .pipe(Effect.scoped)
+
+    const { ir } = yield* compile(source)
+    yield* post("/v1/deploy", { checksum: checksumIr(ir), ir })
+
+    const received: Array<Snapshot> = []
+    const response = yield* client.get("/v1/stream")
+    expect(response.headers["content-type"]).toContain("text/event-stream")
+
+    const fiber = yield* response.stream.pipe(
+      Stream.decodeText(),
+      Stream.splitLines,
+      Stream.filter((line) => line.startsWith("data:")),
+      Stream.map((line) => JSON.parse(line.slice("data:".length)) as Snapshot),
+      Stream.take(2),
+      Stream.runForEach((snapshot) => Effect.sync(() => received.push(snapshot)))
+    ).pipe(Effect.fork)
+
+    // Wait for the initial snapshot so the subscription is established
+    let waited = 0
+    while (received.length < 1 && waited < 400) {
+      yield* Effect.sleep("20 millis")
+      waited += 1
+    }
+    expect(received).toHaveLength(1)
+    expect(received[0]!.usage).toEqual([])
+    expect(received[0]!.config?.version).toBe(1)
+
+    yield* post("/v1/events", {
+      events: [{ name: "api.request", external_customer_id: "acme" }]
+    })
+    yield* Fiber.join(fiber)
+
+    expect(received).toHaveLength(2)
+    expect(received[1]!.usage).toEqual([
+      { meter: "api_calls", customer: "acme", aggregation: "count", value: 1 }
+    ])
+  }).pipe(
+    Effect.scoped,
+    Effect.provide(ServicesLive),
+    Effect.provide(NodeHttpServer.layerTest)
+  ),
+  20000
 )
