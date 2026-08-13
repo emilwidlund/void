@@ -1,0 +1,5 @@
+product pro {
+  price metered nope {
+    per_unit 1 USD
+  }
+}

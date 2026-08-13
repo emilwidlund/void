@@ -1,0 +1,23 @@
+# Usage-based billing configuration for the Pro plan.
+
+meter api_calls {
+  filter event.name == "api.request"
+  aggregate count
+}
+
+meter compute_seconds {
+  filter event.name == "compute.done" and event.status == "success"
+  aggregate sum(event.duration_s)
+}
+
+product pro {
+  name "Pro Plan"
+  price recurring monthly 29 USD
+  price metered api_calls {
+    per_unit 10 USD_CENTS
+    included 10_000
+  }
+  price metered compute_seconds {
+    per_unit 0.001 USD
+  }
+}

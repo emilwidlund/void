@@ -1,0 +1,31 @@
+{
+  "name": "@void/cli",
+  "version": "0.0.1",
+  "type": "module",
+  "bin": {
+    "void": "./dist/bin.js"
+  },
+  "files": [
+    "dist"
+  ],
+  "scripts": {
+    "build": "tsc -p tsconfig.build.json",
+    "typecheck": "tsc -p tsconfig.json",
+    "dev": "tsx src/bin.ts",
+    "test": "vitest run"
+  },
+  "dependencies": {
+    "@effect/cli": "^0.77.0",
+    "@effect/platform": "^0.97.1",
+    "@effect/platform-node": "^0.108.1",
+    "@void/compiler": "workspace:*",
+    "effect": "^3.22.1"
+  },
+  "devDependencies": {
+    "@effect/vitest": "^0.30.0",
+    "@types/node": "^24.0.0",
+    "tsx": "^4.20.0",
+    "typescript": "^5.9.0",
+    "vitest": "^3.2.0"
+  }
+}
