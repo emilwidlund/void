@@ -23,6 +23,32 @@ export type DeployOutcome =
   | { readonly status: "accepted"; readonly version: number }
   | { readonly status: "unchanged"; readonly version: number }
 
+export interface ActiveDescription {
+  readonly version: number
+  readonly checksum: string
+  readonly deployed_at: string
+  readonly source: string | null
+  readonly meters: number
+  readonly products: number
+  readonly ir: BillingIr
+}
+
+/** The wire shape of the active config, shared by `/v1/config` and the SSE stream. */
+export const describeActive = (
+  active: ConfigVersion | undefined
+): ActiveDescription | null =>
+  active === undefined
+    ? null
+    : {
+        version: active.version,
+        checksum: active.checksum,
+        deployed_at: active.deployedAt,
+        source: active.source ?? null,
+        meters: active.ir.meters.length,
+        products: active.ir.products.length,
+        ir: active.ir
+      }
+
 export class ConfigStore extends Effect.Service<ConfigStore>()("ConfigStore", {
   effect: Effect.gen(function* () {
     const versions = yield* Ref.make<ReadonlyArray<ConfigVersion>>([])

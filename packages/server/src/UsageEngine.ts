@@ -1,5 +1,6 @@
-import { Data, Effect, Ref } from "effect"
-import { ConfigStore } from "./ConfigStore.js"
+import { Data, Effect, PubSub, Ref, Stream } from "effect"
+import type { ActiveDescription } from "./ConfigStore.js"
+import { ConfigStore, describeActive } from "./ConfigStore.js"
 import type { IngestEvent } from "./Domain.js"
 import type { AggregationState } from "./Metering.js"
 import { applyEvent, finalize, initialState, matchesFilter } from "./Metering.js"
@@ -16,6 +17,12 @@ export interface UsageRow {
 export interface IngestSummary {
   readonly ingested: number
   readonly matched: Readonly<Record<string, number>>
+}
+
+/** Full dashboard state, pushed over SSE whenever usage or config changes. */
+export interface Snapshot {
+  readonly usage: ReadonlyArray<UsageRow>
+  readonly config: ActiveDescription | null
 }
 
 /** meter id -> customer id -> aggregation state */
