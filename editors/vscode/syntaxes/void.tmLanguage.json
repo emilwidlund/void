@@ -1,0 +1,88 @@
+{
+  "$schema": "https://raw.githubusercontent.com/martinring/tmlanguage/master/tmlanguage.json",
+  "name": "void",
+  "scopeName": "source.void",
+  "patterns": [
+    { "include": "#comment" },
+    { "include": "#string" },
+    { "include": "#declaration" },
+    { "include": "#behavior" },
+    { "include": "#interval" },
+    { "include": "#aggregate-fn" },
+    { "include": "#field-keyword" },
+    { "include": "#logical" },
+    { "include": "#builtin" },
+    { "include": "#boolean" },
+    { "include": "#event-path" },
+    { "include": "#currency" },
+    { "include": "#number" },
+    { "include": "#operator" }
+  ],
+  "repository": {
+    "comment": {
+      "match": "#.*$",
+      "name": "comment.line.number-sign.void"
+    },
+    "string": {
+      "begin": "\"",
+      "end": "\"",
+      "name": "string.quoted.double.void",
+      "patterns": [{ "match": "\\\\.", "name": "constant.character.escape.void" }]
+    },
+    "declaration": {
+      "match": "^\\s*\\b(meter|product|invariant)\\b",
+      "captures": { "1": { "name": "storage.type.void" } }
+    },
+    "field-keyword": {
+      "match": "\\b(filter|aggregate|unit|name|price|recurring|per_unit|included|margin|entitlement|meter|limit|spend|else|per|grant|burn)\\b",
+      "name": "keyword.other.field.void"
+    },
+    "logical": {
+      "match": "\\b(and|or)\\b",
+      "name": "keyword.operator.logical.void"
+    },
+    "behavior": {
+      "match": "\\b(else)\\s+(warn|cap|block|notify)\\b",
+      "captures": {
+        "1": { "name": "keyword.control.void" },
+        "2": { "name": "constant.language.behavior.void" }
+      }
+    },
+    "interval": {
+      "match": "\\b(monthly|yearly|weekly|daily)\\b",
+      "name": "support.constant.interval.void"
+    },
+    "aggregate-fn": {
+      "match": "\\b(count|sum|max|min|avg|unique)\\b(?=\\s*\\()",
+      "name": "support.function.aggregate.void"
+    },
+    "builtin": {
+      "match": "\\b(customer|count)\\b",
+      "name": "variable.language.void"
+    },
+    "boolean": {
+      "match": "\\b(true|false)\\b",
+      "name": "constant.language.boolean.void"
+    },
+    "event-path": {
+      "match": "\\b(event)(\\.)([A-Za-z_][A-Za-z0-9_.]*)",
+      "captures": {
+        "1": { "name": "variable.language.event.void" },
+        "2": { "name": "punctuation.accessor.void" },
+        "3": { "name": "variable.other.property.void" }
+      }
+    },
+    "currency": {
+      "match": "\\b[A-Z]{3}(_CENTS)?\\b",
+      "name": "constant.other.currency.void"
+    },
+    "number": {
+      "match": "\\b\\d[\\d_]*(\\.\\d[\\d_]*)?%?",
+      "name": "constant.numeric.void"
+    },
+    "operator": {
+      "match": "(==|!=|>=|<=|>|<)",
+      "name": "keyword.operator.comparison.void"
+    }
+  }
+}

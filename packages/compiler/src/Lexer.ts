@@ -24,8 +24,16 @@ export interface Token {
   readonly span: Span
 }
 
+/** A `# ...` comment, captured as trivia so the formatter can preserve it. */
+export interface Comment {
+  /** full comment text including the leading `#` */
+  readonly text: string
+  readonly span: Span
+}
+
 export interface LexResult {
   readonly tokens: ReadonlyArray<Token>
+  readonly comments: ReadonlyArray<Comment>
   readonly diagnostics: ReadonlyArray<Diagnostic>
 }
 
@@ -35,6 +43,7 @@ const isDigit = (ch: string) => ch >= "0" && ch <= "9"
 
 export const tokenize = (source: string): LexResult => {
   const tokens: Array<Token> = []
+  const comments: Array<Comment> = []
   const diagnostics: Array<Diagnostic> = []
 
   let offset = 0
@@ -69,7 +78,12 @@ export const tokenize = (source: string): LexResult => {
     }
 
     if (ch === "#") {
+      const commentStart = position()
       while (offset < source.length && peek() !== "\n") advance()
+      comments.push({
+        text: source.slice(commentStart.offset, offset).trimEnd(),
+        span: { start: commentStart, end: position() }
+      })
       continue
     }
 
@@ -160,5 +174,5 @@ export const tokenize = (source: string): LexResult => {
   const eofPosition = position()
   tokens.push({ kind: "EOF", text: "", value: "", span: { start: eofPosition, end: eofPosition } })
 
-  return { tokens, diagnostics }
+  return { tokens, comments, diagnostics }
 }

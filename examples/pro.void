@@ -1,35 +1,25 @@
 # Usage-based billing configuration for the Pro plan.
 
 # Compile-checked: deploying a config that breaks these fails in CI.
-invariant "compute stays profitable" {
-  margin(compute_seconds) >= 40%
-}
+invariant "compute stays profitable" { margin(compute_seconds) >= 40% }
 
 # Also compile-checked, but `else warn` softens a violation to a warning
 # instead of failing the build — the incremental-adoption path when
 # tightening rules on an existing config.
-invariant "API price floor" {
-  price(api_calls) >= 5 USD_CENTS else warn
-}
+invariant "API price floor" { price(api_calls) >= 5 USD_CENTS else warn }
 
 # Runtime-monitored: the bill clamps at the ceiling, and the violation
 # (with its remedy) surfaces live on the dashboard.
-invariant "bill shock protection" {
-  spend(customer) <= 500 USD else cap
-}
+invariant "bill shock protection" { spend(customer) <= 500 USD else cap }
 
 # Layered above the cap: if uncapped usage runs far past the ceiling,
 # `enforcement` flips to "blocked" on GET /v1/entitlements/:customer and
 # the application is expected to stop serving the customer.
-invariant "runaway usage hard stop" {
-  spend(customer) <= 1_000 USD else block
-}
+invariant "runaway usage hard stop" { spend(customer) <= 1000 USD else block }
 
 # Needs events to report `_cost`: customers whose costs eat the margin
 # raise an alert instead of silently losing money.
-invariant "no unprofitable customers" {
-  margin(customer) >= 20% else notify
-}
+invariant "no unprofitable customers" { margin(customer) >= 20% else notify }
 
 meter api_calls {
   filter event.name == "api.request"
@@ -40,7 +30,16 @@ meter api_calls {
 meter compute_seconds {
   filter event.name == "compute.done" and event.status == "success"
   aggregate sum(event.duration_s)
-  unit seconds
+  unit minutes
+}
+
+product awesome {
+  name "Wow"
+  price recurring weekly 20 GBP_CENTS
+  
+  entitlement seats {
+    limit 5
+  }
 }
 
 product pro {
@@ -48,9 +47,7 @@ product pro {
   price recurring monthly 29 USD
 
   entitlement sso
-  entitlement seats { 
-    limit 5   
-  }
+  entitlement seats { limit 5 }
   entitlement api_quota {
     meter api_calls
     limit 100_000
@@ -60,8 +57,6 @@ product pro {
     per_unit 10 USD_CENTS
     included 10_000
   }
-  
-  meter compute_seconds {
-    margin 60%
-  }
+
+  meter compute_seconds { margin 60% }
 }

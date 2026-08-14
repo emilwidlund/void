@@ -1,0 +1,45 @@
+{
+  "name": "void-billing",
+  "displayName": "void billing DSL",
+  "description": "Syntax highlighting, diagnostics, completion and go-to-definition for .void billing configurations",
+  "version": "0.0.1",
+  "publisher": "void",
+  "license": "MIT",
+  "private": true,
+  "engines": {
+    "vscode": "^1.75.0"
+  },
+  "categories": ["Programming Languages"],
+  "main": "./extension.js",
+  "activationEvents": ["onLanguage:void"],
+  "contributes": {
+    "languages": [
+      {
+        "id": "void",
+        "aliases": ["void", "void billing"],
+        "extensions": [".void"],
+        "configuration": "./language-configuration.json"
+      }
+    ],
+    "grammars": [
+      {
+        "language": "void",
+        "scopeName": "source.void",
+        "path": "./syntaxes/void.tmLanguage.json"
+      }
+    ],
+    "configuration": {
+      "title": "void billing",
+      "properties": {
+        "void.serverPath": {
+          "type": "string",
+          "default": "",
+          "description": "Path to the void language server (void-lsp). When empty, the extension looks for packages/lsp/dist/bin.js or node_modules/@void/lsp/dist/bin.js in the workspace, then falls back to `void-lsp` on PATH."
+        }
+      }
+    }
+  },
+  "dependencies": {
+    "vscode-languageclient": "^9.0.1"
+  }
+}

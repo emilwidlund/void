@@ -37,6 +37,9 @@ pnpm build
 # Validate a config (exit code 1 on errors, rustc-style diagnostics)
 node packages/cli/dist/bin.js check examples/pro.void
 
+# Canonically format in place (--check for CI: exit 1 if unformatted)
+node packages/cli/dist/bin.js fmt examples/pro.void
+
 # Compile to JSON IR on stdout
 node packages/cli/dist/bin.js build examples/pro.void
 
@@ -117,13 +120,26 @@ non-2xx response exits 1, so it drops straight into a CI/CD pipeline.
   means minor units. The IR normalizes everything to decimal strings in minor
   units, so sub-cent unit prices stay exact (`0.001 USD` → `"0.1"` cents).
 - Comments start with `#`. Numbers may use `_` separators (`10_000`).
+- **`void fmt`** rewrites a file into canonical form: consistent indentation
+  and spacing, `_`-grouped numbers (five digits and up), single-field blocks
+  inlined (`entitlement seats { limit 5 }`), one blank line between
+  declarations, blank-line grouping and all comments preserved. Formatting
+  only requires a parse, so files with semantic errors still format.
+- **Editor support** — `@void/lsp` is a language server (diagnostics as you
+  type, context-aware completion, go-to-definition and hover for meter
+  references), and `editors/vscode` is a VS Code extension that bundles it
+  with syntax highlighting for `.void` files (money, percentages, filter
+  expressions, behaviors), `#` comment toggling and bracket pairs. See
+  `editors/vscode/README.md` for install instructions; the server also works
+  with any LSP-capable editor via `void-lsp --stdio`.
 
 ## Workspace
 
 | Package | Purpose |
 | --- | --- |
 | `@void/compiler` | Lexer → parser → checker → IR emitter, span-based diagnostics, IR schema. Built on [Effect](https://effect.website). |
-| `@void/cli` | `void` CLI (`init`, `check`, `build`, `deploy`) built on `@effect/cli`. |
+| `@void/cli` | `void` CLI (`init`, `check`, `build`, `deploy`, `fmt`) built on `@effect/cli`. |
+| `@void/lsp` | Language server: live diagnostics, completion, go-to-definition, hover. |
 | `@void/server` | Void server: accepts deploys, ingests events, runs meter aggregation. |
 | `@void/web` | Next.js dashboard (`apps/web`): live earnings, projections, per-customer spend. |
 

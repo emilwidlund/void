@@ -1,0 +1,28 @@
+{
+  "name": "@void/lsp",
+  "version": "0.0.1",
+  "type": "module",
+  "main": "./dist/Core.js",
+  "types": "./dist/Core.d.ts",
+  "bin": {
+    "void-lsp": "./dist/bin.js"
+  },
+  "files": [
+    "dist"
+  ],
+  "scripts": {
+    "build": "tsc -p tsconfig.build.json",
+    "typecheck": "tsc -p tsconfig.json",
+    "test": "vitest run"
+  },
+  "dependencies": {
+    "@void/compiler": "workspace:*",
+    "vscode-languageserver": "^9.0.1",
+    "vscode-languageserver-textdocument": "^1.0.12"
+  },
+  "devDependencies": {
+    "@types/node": "^24.0.0",
+    "typescript": "^5.9.0",
+    "vitest": "^3.2.0"
+  }
+}

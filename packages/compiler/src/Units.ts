@@ -48,6 +48,20 @@ const KNOWN: Readonly<Record<string, ResolvedUnit>> = {
   terabyte: unit("terabyte", "data", 1e12)
 }
 
+/** Display list of known units, for tooling (completion, docs). */
+export const KNOWN_UNIT_NAMES: ReadonlyArray<string> = [
+  "ms",
+  "seconds",
+  "minutes",
+  "hours",
+  "days",
+  "bytes",
+  "kb",
+  "mb",
+  "gb",
+  "tb"
+]
+
 export const resolveUnit = (raw: string): ResolvedUnit => {
   const lower = raw.toLowerCase()
   const direct = KNOWN[lower]
