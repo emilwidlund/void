@@ -1,4 +1,5 @@
 {
   "/api/void/[...path]/route": "app/api/void/[...path]/route.js",
+  "/customers/[customer]/page": "app/customers/[customer]/page.js",
   "/page": "app/page.js"
 }
