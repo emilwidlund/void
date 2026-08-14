@@ -38,16 +38,16 @@ node packages/cli/dist/bin.js check examples/pro.void
 node packages/cli/dist/bin.js build examples/pro.void
 
 # Deploy the checksummed IR to a void server (built for CI/CD)
-node packages/cli/dist/bin.js deploy examples/pro.void --endpoint https://... --token ...
-node packages/cli/dist/bin.js deploy examples/pro.void --dry-run   # print payload only
+node packages/cli/dist/bin.js deploy examples/pro.void --endpoint http://localhost:4000/v1/deploy
+node packages/cli/dist/bin.js deploy examples/pro.void --endpoint ... --dry-run   # print payload only
 ```
 
 `deploy` POSTs `{ checksum, ir, meta }` where `checksum` is sha256 over the
 canonical compact IR JSON — comment or formatting changes don't produce a new
 version, so a server can no-op on an already-deployed checksum. `--endpoint`
-and `--token` fall back to the `VOID_ENDPOINT` / `VOID_TOKEN` environment
-variables, and a compile error or non-2xx response exits 1, so it drops
-straight into a CI/CD pipeline.
+is the full deploy URL; it and `--token` (sent as a bearer token) fall back to
+the `VOID_ENDPOINT` / `VOID_TOKEN` environment variables. A compile error or
+non-2xx response exits 1, so it drops straight into a CI/CD pipeline.
 
 ## Language
 
@@ -74,7 +74,7 @@ straight into a CI/CD pipeline.
 | `@void/compiler` | Lexer → parser → checker → IR emitter, span-based diagnostics, IR schema. Built on [Effect](https://effect.website). |
 | `@void/cli` | `void` CLI (`init`, `check`, `build`, `deploy`) built on `@effect/cli`. |
 | `@void/server` | Void server: accepts deploys, ingests events, runs meter aggregation. |
-| `@void/web` | Next.js dashboard (`apps/web`): live usage, run-rate forecasts, deployed config. |
+| `@void/web` | Next.js dashboard (`apps/web`): live earnings, projections, per-customer spend. |
 
 ## Server
 
@@ -83,17 +83,22 @@ just the server: `pnpm --filter @void/server dev` (`PORT`, default 4000).
 Endpoints:
 
 - `POST /v1/deploy` — accepts `{ checksum, ir, meta }` from `void deploy`. The
-  IR is parsed with the compiler's schema and the checksum re-verified; an
-  already-active checksum is a no-op (`unchanged`), otherwise a new config
-  version is stored.
+  IR is parsed with the compiler's schema and the checksum re-verified (400 on
+  mismatch); an already-active checksum is a no-op (200 `unchanged`), otherwise
+  a new config version is stored (201 `accepted`).
 - `POST /v1/events` — batch event ingestion: `{ "events": [{ "name": "api.request",
   "external_customer_id": "acme", "properties": { ... } }] }`. Every event is
   evaluated against each meter's filter and folded into its aggregation
-  (count/sum/max/min/avg/unique), keyed per customer.
+  (count/sum/max/min/avg/unique), keyed per customer (`anonymous` when no
+  customer id is given). Responds 202 with a per-meter match summary, or 409
+  if no config has been deployed yet.
 - `GET /v1/usage` — aggregated usage per meter and customer.
 - `GET /v1/config` — the active config version.
-- `GET /v1/stream` — server-sent events: a full `{ usage, config }` snapshot
-  on connect, then one per ingested batch or deploy (the dashboard's live feed).
+- `GET /v1/stream` — server-sent events: a full `{ usage, config, history }`
+  snapshot on connect, then one per ingested batch or deploy (the dashboard's
+  live feed). `history` is the last 600 change-points of usage, which powers
+  the dashboard's charts.
+- `GET /health` — liveness check.
 
 State is in-memory for now — a real deployment would back the config store and
 usage state with a database.
@@ -107,15 +112,31 @@ and `VOID_SERVER_URL` override the defaults.
 
 `pnpm dev` (or `pnpm --filter @void/web dev` alone) starts the dashboard on
 [localhost:3001](http://localhost:3001). It subscribes to the server's SSE
-stream, so usage updates the moment events are ingested (set `VOID_SERVER_URL`
-if the server isn't on `localhost:4000`). It shows:
+stream through a `/api/void/*` proxy route, so usage updates the moment events
+are ingested (set `VOID_SERVER_URL` on the web process if the server isn't on
+`localhost:4000` — it's read at request time, never baked into the build or
+exposed to the browser). The overview shows:
 
-- **Usage** — aggregated meter values per customer, live.
-- **Forecasts** — naive run-rate projection: usage velocity since the config
-  was deployed, extrapolated over a 30-day period and priced per metered price
-  (after the `included` allowance), plus a projected metered-revenue total.
-- **Deployed configuration** — meters (filters + aggregations rendered back as
-  DSL-ish text) and products with their prices, straight from the active IR.
+- **Earnings** — usage charges accrued so far and a projection for the month,
+  as a headline sentence, KPI tiles (usage earnings, expected this month,
+  subscription base, paying customers), and an earnings-over-time chart.
+- **Insights** — auto-generated highlights: revenue concentration in a top
+  customer, customers past their included allowance and billing overage,
+  recent earning-pace changes, and metered usage no product prices.
+- **Customers** — spend per customer, each linking to a detail page
+  (`/customers/<id>`) with that customer's own KPIs, earnings chart, meter
+  breakdown, and usage activity.
+- **Usage activity** — per-meter volume sparklines across all customers.
+- **Billing configuration** — a collapsible panel with the active version's
+  meters (filters + aggregations rendered back as DSL-ish text) and products
+  with their prices, straight from the deployed IR.
+
+The spend model is deliberately naive while the config has no subscription
+data: a customer is attributed to a product when they have usage on one of its
+metered meters, which contributes that product's recurring fees (normalized to
+a 30-day period) as their base. Metered spend prices usage beyond each
+`included` allowance, and projections extrapolate the run rate observed since
+the config was deployed.
 
 Common commands: `pnpm build`, `pnpm test`, `pnpm typecheck` (all via Turborepo),
 and `pnpm --filter @void/cli dev` to run the CLI from source.
