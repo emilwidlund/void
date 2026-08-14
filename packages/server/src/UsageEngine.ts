@@ -19,10 +19,19 @@ export interface IngestSummary {
   readonly matched: Readonly<Record<string, number>>
 }
 
+export interface HistoryPoint {
+  readonly at: string
+  readonly usage: ReadonlyArray<UsageRow>
+}
+
+/** How many change-points of usage history are retained for charts. */
+const HISTORY_LIMIT = 600
+
 /** Full dashboard state, pushed over SSE whenever usage or config changes. */
 export interface Snapshot {
   readonly usage: ReadonlyArray<UsageRow>
   readonly config: ActiveDescription | null
+  readonly history: ReadonlyArray<HistoryPoint>
 }
 
 /** meter id -> customer id -> aggregation state */
@@ -32,6 +41,7 @@ export class UsageEngine extends Effect.Service<UsageEngine>()("UsageEngine", {
   effect: Effect.gen(function* () {
     const configs = yield* ConfigStore
     const state = yield* Ref.make<UsageState>(new Map())
+    const history = yield* Ref.make<ReadonlyArray<HistoryPoint>>([])
     const changesHub = yield* PubSub.unbounded<Snapshot>()
 
     const ingest = (
@@ -87,14 +97,18 @@ export class UsageEngine extends Effect.Service<UsageEngine>()("UsageEngine", {
     const snapshot: Effect.Effect<Snapshot> = Effect.gen(function* () {
       const rows = yield* usage
       const active = yield* configs.active
-      return { usage: rows, config: describeActive(active) }
+      const points = yield* Ref.get(history)
+      return { usage: rows, config: describeActive(active), history: points }
     })
 
-    /** Publishes the current snapshot to all SSE subscribers. */
-    const notify = snapshot.pipe(
-      Effect.flatMap((current) => PubSub.publish(changesHub, current)),
-      Effect.asVoid
-    )
+    /** Records a history point, then publishes the snapshot to SSE subscribers. */
+    const notify = Effect.gen(function* () {
+      const rows = yield* usage
+      yield* Ref.update(history, (points) =>
+        [...points, { at: new Date().toISOString(), usage: rows }].slice(-HISTORY_LIMIT)
+      )
+      yield* Effect.flatMap(snapshot, (current) => PubSub.publish(changesHub, current))
+    })
 
     /** Emits the current snapshot immediately, then every subsequent change. */
     const changes: Stream.Stream<Snapshot> = Stream.concat(

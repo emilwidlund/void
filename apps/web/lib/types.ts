@@ -17,7 +17,13 @@ export interface ActiveConfig {
   readonly ir: BillingIr
 }
 
+export interface HistoryPoint {
+  readonly at: string
+  readonly usage: ReadonlyArray<UsageRow>
+}
+
 export interface DashboardData {
   readonly usage: ReadonlyArray<UsageRow>
   readonly config: ActiveConfig | null
+  readonly history: ReadonlyArray<HistoryPoint>
 }

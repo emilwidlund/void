@@ -28,6 +28,19 @@ export const formatMoney = (money: IrMoney): string => {
   return symbol !== undefined ? `${symbol}${rendered}` : `${rendered} ${money.currency}`
 }
 
+/** Formats an amount already in minor units (may be fractional) as major units. */
+export const formatMinor = (minor: number, currency: string): string =>
+  formatMoney({ currency, amount: String(minor) })
+
+/** Rounds to whole major units for prose ("about $96") once past a dollar. */
+export const formatApprox = (minor: number, currency: string): string => {
+  if (minor < 100) return formatMinor(minor, currency)
+  const major = Math.round(minor / 100)
+  const symbol = SYMBOLS[currency]
+  const rendered = major.toLocaleString("en-US")
+  return symbol !== undefined ? `${symbol}${rendered}` : `${rendered} ${currency}`
+}
+
 export const formatUnits = (value: number): string =>
   Number.isInteger(value)
     ? value.toLocaleString("en-US")

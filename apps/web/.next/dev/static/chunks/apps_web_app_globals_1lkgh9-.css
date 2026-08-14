@@ -255,6 +255,84 @@ td.num, th.num {
   display: flex;
 }
 
+.stat-sub {
+  color: var(--text-muted);
+  margin-top: 2px;
+  font-size: 12px;
+}
+
+.customer-row td {
+  border-top: 1px solid var(--border);
+  background: color-mix(in srgb, var(--surface) 94%, var(--accent));
+  font-weight: 600;
+}
+
+tr.customer-row:first-child td {
+  border-top: none;
+}
+
+.subrow td {
+  color: var(--text-muted);
+  padding-top: 6px;
+  padding-bottom: 6px;
+  font-size: 12.5px;
+}
+
+.subrow-meter {
+  padding-left: 28px !important;
+}
+
+.sharebar-col {
+  width: 120px;
+}
+
+.spendbar {
+  background: var(--border);
+  border-radius: 4px;
+  height: 8px;
+  display: block;
+  overflow: hidden;
+}
+
+.spendbar-fill {
+  background: var(--accent);
+  border-radius: 4px;
+  min-width: 2px;
+  height: 100%;
+  display: block;
+}
+
+.allowance {
+  justify-content: flex-end;
+  align-items: center;
+  gap: 8px;
+  display: inline-flex;
+}
+
+.progress {
+  background: var(--border);
+  border-radius: 3px;
+  width: 72px;
+  height: 6px;
+  display: inline-block;
+  overflow: hidden;
+}
+
+.progress-fill {
+  background: var(--ok);
+  height: 100%;
+  display: block;
+}
+
+.progress-fill.over {
+  background: var(--bad);
+}
+
+.over-text {
+  color: var(--bad);
+  font-weight: 600;
+}
+
 .empty {
   text-align: center;
   color: var(--text-muted);

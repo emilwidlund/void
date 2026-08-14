@@ -53,6 +53,7 @@ const randomEvent = (): SimEvent => {
 let sent = 0
 let errors = 0
 let lastError = ""
+let waitingForConfig = false
 const matchedTotals: Record<string, number> = {}
 
 const sendEvent = async (): Promise<void> => {
@@ -62,6 +63,12 @@ const sendEvent = async (): Promise<void> => {
       headers: { "content-type": "application/json" },
       body: JSON.stringify({ events: [randomEvent()] })
     })
+    if (response.status === 409) {
+      // No config deployed yet — keep retrying and say so in the status line
+      waitingForConfig = true
+      await response.text()
+      return
+    }
     if (!response.ok) {
       errors += 1
       const body = await response.text()
@@ -69,15 +76,11 @@ const sendEvent = async (): Promise<void> => {
       if (message !== lastError) {
         lastError = message
         console.error(`\n✗ ${message}`)
-        if (response.status === 409) {
-          console.error(
-            `  deploy a config first: void deploy examples/pro.void --endpoint ${serverUrl}/v1/deploy`
-          )
-        }
       }
       return
     }
     lastError = ""
+    waitingForConfig = false
     sent += 1
     const summary = (await response.json()) as { matched: Record<string, number> }
     for (const [meter, count] of Object.entries(summary.matched)) {
@@ -99,6 +102,12 @@ const formatTotals = (): string => {
 }
 
 const printStatus = () => {
+  if (waitingForConfig) {
+    process.stdout.write(
+      `\r⚠ no config deployed — run: void deploy examples/pro.void --endpoint ${serverUrl}/v1/deploy  `
+    )
+    return
+  }
   process.stdout.write(
     `\r→ ${sent} ingested · matched: ${formatTotals()}${errors > 0 ? ` · ${errors} errors` : ""}  `
   )

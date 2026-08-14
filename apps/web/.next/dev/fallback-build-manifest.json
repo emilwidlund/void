@@ -1,6 +1,30 @@
 {
   "pages": {
-    "/_app": []
+    "/_app": [
+      "static/chunks/1rmo_next_dist_compiled_1qdyufb._.js",
+      "static/chunks/1rmo_next_dist_shared_lib_0n40k7w._.js",
+      "static/chunks/1rmo_next_dist_client_1xhl40-._.js",
+      "static/chunks/1rmo_next_dist_1-a1-o4._.js",
+      "static/chunks/1rmo_next_app_0oa1ydd.js",
+      "static/chunks/[next]_entry_page-loader_ts_0eft80w._.js",
+      "static/chunks/1yi7_react-dom_1papa4l._.js",
+      "static/chunks/node_modules__pnpm_0-4qvth._.js",
+      "static/chunks/[root-of-the-server]__0v4f-fb._.js",
+      "static/chunks/apps_web_pages__app_0du2_q-._.js",
+      "static/chunks/turbopack-apps_web_pages__app_20obdva._.js"
+    ],
+    "/_error": [
+      "static/chunks/1rmo_next_dist_compiled_1qdyufb._.js",
+      "static/chunks/1rmo_next_dist_shared_lib_0tcugcw._.js",
+      "static/chunks/1rmo_next_dist_client_1xhl40-._.js",
+      "static/chunks/1rmo_next_dist_0o3jilz._.js",
+      "static/chunks/[next]_entry_page-loader_ts_0j4vdn-._.js",
+      "static/chunks/1yi7_react-dom_1papa4l._.js",
+      "static/chunks/node_modules__pnpm_0-4qvth._.js",
+      "static/chunks/[root-of-the-server]__0nu-1gm._.js",
+      "static/chunks/apps_web_pages__error_0du2_q-._.js",
+      "static/chunks/turbopack-apps_web_pages__error_1_i0bdj._.js"
+    ]
   },
   "devFiles": [],
   "polyfillFiles": [],
@@ -11,5 +35,6 @@
   ],
   "rootMainFiles": [],
   "rootMainFilesTree": {},
-  "pagesChunkGroupBootstrapParams": {}
+  "pagesChunkGroupBootstrapParams": {},
+  "chunkLoadingGlobal": "TURBOPACK"
 }
