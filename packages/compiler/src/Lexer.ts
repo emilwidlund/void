@@ -11,6 +11,7 @@ export type TokenKind =
   | "RParen"
   | "Dot"
   | "Comma"
+  | "Percent"
   | "Op"
   | "EOF"
 
@@ -137,7 +138,8 @@ export const tokenize = (source: string): LexResult => {
       "(": "LParen",
       ")": "RParen",
       ".": "Dot",
-      ",": "Comma"
+      ",": "Comma",
+      "%": "Percent"
     }
     const kind = single[ch]
     if (kind !== undefined) {

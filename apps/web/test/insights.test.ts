@@ -6,7 +6,7 @@ import type { UsageRow } from "../lib/types"
 
 const ir: BillingIr = {
   version: 1,
-  meters: [{ id: "api_calls", filter: null, aggregation: { type: "count" } }],
+  meters: [{ id: "api_calls", filter: null, aggregation: { type: "count" }, unit: null }],
   products: [
     {
       id: "pro",
@@ -16,11 +16,15 @@ const ir: BillingIr = {
           type: "metered",
           meter: "api_calls",
           per_unit: { currency: "USD", amount: "10" },
-          included_units: 100
+          included_units: 100,
+          per: null,
+          unit_factor: 1
         }
-      ]
+      ],
+      entitlements: []
     }
-  ]
+  ],
+  invariants: []
 }
 
 const row = (customer: string, value: number): UsageRow => ({
@@ -50,7 +54,8 @@ describe("insights", () => {
     // steady 1 unit/minute for 30min, then 3 units/minute: recent pace up
     const points = Array.from({ length: 40 }, (_, i) => ({
       t: i * 60_000,
-      accruedMinor: i < 30 ? i : 30 + (i - 30) * 3
+      accruedMinor: i < 30 ? i : 30 + (i - 30) * 3,
+      costMinor: 0
     }))
     const delta = paceDelta(points)
     expect(delta).not.toBeNull()
@@ -58,6 +63,6 @@ describe("insights", () => {
   })
 
   it("returns null pace with too little history", () => {
-    expect(paceDelta([{ t: 0, accruedMinor: 0 }])).toBeNull()
+    expect(paceDelta([{ t: 0, accruedMinor: 0, costMinor: 0 }])).toBeNull()
   })
 })

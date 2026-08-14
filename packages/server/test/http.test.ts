@@ -19,6 +19,12 @@ const source = `
   product pro {
     name "Pro Plan"
     price recurring monthly 29 USD
+    entitlement sso
+    entitlement seats { limit 5 }
+    entitlement api_quota {
+      meter api_calls
+      limit 3
+    }
     meter api_calls {
       per_unit 10 USD_CENTS
       included 10_000
@@ -74,15 +80,15 @@ it.effect("deploy → ingest → usage flow", () =>
     const config = yield* get("/v1/config")
     expect(config.json.active).toMatchObject({ version: 1, meters: 2, products: 1 })
 
-    // Ingest a batch of events
+    // Ingest a batch of events (some carrying `_cost` in major units)
     const ingested = yield* post("/v1/events", {
       events: [
-        { name: "api.request", external_customer_id: "acme" },
+        { name: "api.request", external_customer_id: "acme", _cost: { amount: 0.004, currency: "USD" } },
         { name: "api.request", external_customer_id: "acme" },
         { name: "api.request", external_customer_id: "globex" },
         { name: "api.request" },
-        { name: "compute.done", external_customer_id: "acme", properties: { status: "success", duration_s: 12.5 } },
-        { name: "compute.done", external_customer_id: "acme", properties: { status: "success", duration_s: 7.5 } },
+        { name: "compute.done", external_customer_id: "acme", properties: { status: "success", duration_s: 12.5 }, _cost: { amount: 0.01, currency: "USD" } },
+        { name: "compute.done", external_customer_id: "acme", properties: { status: "success", duration_s: 7.5 }, _cost: { amount: 0.01, currency: "USD" } },
         { name: "compute.done", external_customer_id: "acme", properties: { status: "failed", duration_s: 100 } },
         { name: "unrelated.event" }
       ]
@@ -90,10 +96,11 @@ it.effect("deploy → ingest → usage flow", () =>
     expect(ingested.status).toBe(202)
     expect(ingested.json).toEqual({
       ingested: 8,
-      matched: { api_calls: 4, compute_seconds: 2 }
+      matched: { api_calls: 4, compute_seconds: 2 },
+      cost_minor: 2.4
     })
 
-    // Aggregated usage per meter and customer
+    // Aggregated usage per meter and customer, plus accumulated costs
     const usage = yield* get("/v1/usage")
     expect(usage.json.usage).toEqual([
       { meter: "api_calls", customer: "acme", aggregation: "count", value: 2 },
@@ -101,6 +108,59 @@ it.effect("deploy → ingest → usage flow", () =>
       { meter: "api_calls", customer: "globex", aggregation: "count", value: 1 },
       { meter: "compute_seconds", customer: "acme", aggregation: "sum", value: 20 }
     ])
+    expect(usage.json.costs).toEqual([
+      { customer: "acme", event: "api.request", currency: "USD", cost_minor: 0.4 },
+      { customer: "acme", event: "compute.done", currency: "USD", cost_minor: 2 }
+    ])
+    // Costs are also attributed to every meter whose filter matched the event
+    expect(usage.json.meter_costs).toEqual([
+      { meter: "api_calls", customer: "acme", currency: "USD", cost_minor: 0.4 },
+      { meter: "compute_seconds", customer: "acme", currency: "USD", cost_minor: 2 }
+    ])
+
+    // Negative amounts and malformed currencies are rejected by the schema
+    const negative = yield* post("/v1/events", {
+      events: [{ name: "api.request", _cost: { amount: -1, currency: "USD" } }]
+    })
+    expect(negative.status).toBe(400)
+    const badCurrency = yield* post("/v1/events", {
+      events: [{ name: "api.request", _cost: { amount: 1, currency: "dollars" } }]
+    })
+    expect(badCurrency.status).toBe(400)
+
+    // Entitlements resolve against attributed products and live usage
+    const within = yield* get("/v1/entitlements/acme")
+    expect(within.status).toBe(200)
+    expect(within.json).toEqual({
+      customer: "acme",
+      products: ["pro"],
+      entitlements: [
+        { id: "sso", product: "pro", type: "flag" },
+        { id: "seats", product: "pro", type: "limit", limit: 5 },
+        {
+          id: "api_quota",
+          product: "pro",
+          type: "metered",
+          meter: "api_calls",
+          limit: 3,
+          used: 2,
+          remaining: 1,
+          exceeded: false
+        }
+      ],
+      enforcement: "ok",
+      violations: []
+    })
+
+    // A customer with no usage has no attributed products
+    const unknown = yield* get("/v1/entitlements/nobody")
+    expect(unknown.json).toEqual({
+      customer: "nobody",
+      products: [],
+      entitlements: [],
+      enforcement: "ok",
+      violations: []
+    })
 
     // Usage accumulates across batches
     yield* post("/v1/events", {
@@ -109,9 +169,83 @@ it.effect("deploy → ingest → usage flow", () =>
     const accumulated = yield* get("/v1/usage")
     expect(accumulated.json.usage[0]).toMatchObject({ customer: "acme", value: 3 })
 
+    // The metered entitlement flips to exceeded once usage passes the limit
+    yield* post("/v1/events", {
+      events: [
+        { name: "api.request", external_customer_id: "acme" },
+        { name: "api.request", external_customer_id: "acme" }
+      ]
+    })
+    const exceeded = yield* get("/v1/entitlements/acme")
+    expect(exceeded.json.entitlements[2]).toMatchObject({
+      id: "api_quota",
+      used: 5,
+      remaining: 0,
+      exceeded: true
+    })
+
     // Malformed bodies are rejected
     const malformed = yield* post("/v1/events", { events: [] })
     expect(malformed.status).toBe(400)
+  }).pipe(
+    Effect.scoped,
+    Effect.provide(ServicesLive),
+    Effect.provide(NodeHttpServer.layerTest)
+  )
+)
+
+it.effect("blocks enforcement when a spend invariant with `else block` is violated", () =>
+  Effect.gen(function* () {
+    yield* HttpServer.serveEffect(router)
+    const client = yield* HttpClient.HttpClient
+
+    const post = (url: string, body: unknown) =>
+      client
+        .execute(HttpClientRequest.post(url).pipe(HttpClientRequest.bodyUnsafeJson(body)))
+        .pipe(Effect.scoped)
+    const get = (url: string) =>
+      client.get(url).pipe(
+        Effect.flatMap((r) => Effect.map(r.json, (json) => json)),
+        Effect.scoped
+      )
+
+    const { ir } = yield* compile(`
+      meter api_calls {
+        filter event.name == "api.request"
+        aggregate count
+      }
+      product pro {
+        name "Pro"
+        price recurring monthly 29 USD
+        meter api_calls { per_unit 10 USD_CENTS }
+      }
+      invariant "hard stop" { spend(customer) <= 30 USD else block }
+    `)
+    yield* post("/v1/deploy", { checksum: checksumIr(ir), ir })
+
+    // 5 calls at 10 cents + $29 base = $29.50 — inside the ceiling
+    yield* post("/v1/events", {
+      events: Array.from({ length: 5 }, () => ({
+        name: "api.request",
+        external_customer_id: "acme"
+      }))
+    })
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const ok = (yield* get("/v1/entitlements/acme")) as any
+    expect(ok.enforcement).toBe("ok")
+    expect(ok.violations).toEqual([])
+
+    // 15 more calls -> $31 — over the ceiling, enforcement flips
+    yield* post("/v1/events", {
+      events: Array.from({ length: 15 }, () => ({
+        name: "api.request",
+        external_customer_id: "acme"
+      }))
+    })
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const blocked = (yield* get("/v1/entitlements/acme")) as any
+    expect(blocked.enforcement).toBe("blocked")
+    expect(blocked.violations).toEqual([{ invariant: "hard stop", behavior: "block" }])
   }).pipe(
     Effect.scoped,
     Effect.provide(ServicesLive),

@@ -1,4 +1,5 @@
 import type { BillingIr } from "@void/compiler"
+import { formatMinor } from "./format"
 import type { RevenuePoint } from "./series"
 import type { SpendOverview } from "./spend"
 import type { UsageRow } from "./types"
@@ -47,7 +48,9 @@ export const unpricedMeters = (
 ): ReadonlyArray<string> => {
   const priced = new Set(
     ir.products.flatMap((product) =>
-      product.prices.flatMap((price) => (price.type === "metered" ? [price.meter] : []))
+      product.prices.flatMap((price) =>
+        price.type === "metered" || price.type === "metered_margin" ? [price.meter] : []
+      )
     )
   )
   return [...new Set(usage.map((row) => row.meter))].filter((meter) => !priced.has(meter))
@@ -101,6 +104,57 @@ export const highlights = (
       tone: "warn",
       text: `Usage on ${unpriced.join(", ")} isn't priced by any product — it earns nothing`
     })
+  }
+
+  const losing = spend.customers.filter(
+    (customer) => customer.marginPct !== null && customer.marginPct < 0
+  )
+  if (losing.length > 0) {
+    items.push({
+      tone: "warn",
+      text:
+        losing.length === 1
+          ? `You're losing money on ${losing[0]!.customer} — its costs exceed its revenue`
+          : `You're losing money on ${losing.length} customers — their costs exceed their revenue`
+    })
+  }
+
+  if (spend.totals.cappedMinor > 0) {
+    const capped = spend.customers.filter((customer) => customer.cappedMinor > 0)
+    items.push({
+      tone: "neutral",
+      text: `Bill caps absorbed ${formatMinor(spend.totals.cappedMinor, spend.totals.currency)} this period across ${capped.length} customer${capped.length === 1 ? "" : "s"}`
+    })
+  }
+
+  const foreign = [
+    ...new Set(
+      spend.customers
+        .flatMap((customer) => customer.costsByEvent)
+        .filter((entry) => entry.currency !== spend.totals.currency)
+        .map((entry) => entry.currency)
+    )
+  ]
+  if (foreign.length > 0) {
+    items.push({
+      tone: "warn",
+      text: `Some costs are reported in ${foreign.join(", ")} but pricing is in ${spend.totals.currency} — margins don't convert currencies`
+    })
+  }
+
+  const margin = spend.totals.marginPct
+  if (margin !== null && spend.totals.projectedCostMinor > 0) {
+    if (margin < 0.2) {
+      items.push({
+        tone: "warn",
+        text: `Overall gross margin is ${Math.round(margin * 100)}% — thin for a usage business`
+      })
+    } else if (margin >= 0.5) {
+      items.push({
+        tone: "ok",
+        text: `Healthy gross margin: ${Math.round(margin * 100)}% after reported costs`
+      })
+    }
   }
 
   return items

@@ -44,6 +44,7 @@ export function CustomerTable({
             <th className={cell}>Plan</th>
             <th className={cell}>Status</th>
             <th className={`${cell} text-right`}>Expected this month</th>
+            <th className={`${cell} text-right`}>Margin</th>
             <th className={`${cell} w-[130px]`}>Share</th>
           </tr>
         </thead>
@@ -69,6 +70,15 @@ export function CustomerTable({
               </td>
               <td className={`${cell} text-right`}>
                 {formatMinor(customer.projectedMinor, customer.currency)}
+              </td>
+              <td className={`${cell} text-right`}>
+                {customer.marginPct === null || customer.projectedCostMinor === 0 ? (
+                  <span className="text-ink-faint">—</span>
+                ) : (
+                  <span className={customer.marginPct < 0 ? "text-bad" : "text-ink-muted"}>
+                    {Math.round(customer.marginPct * 100)}%
+                  </span>
+                )}
               </td>
               <td className={cell}>
                 <span className="block h-1.5 bg-bar">

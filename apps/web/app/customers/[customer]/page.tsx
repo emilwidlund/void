@@ -26,7 +26,14 @@ export default function CustomerPage() {
   const spend = useMemo(
     () =>
       data?.config
-        ? computeSpend(data.usage, data.config.ir, data.config.deployed_at, new Date())
+        ? computeSpend(
+            data.usage,
+            data.config.ir,
+            data.config.deployed_at,
+            new Date(),
+            data.costs,
+            data.meter_costs
+          )
         : null,
     [data]
   )
@@ -126,7 +133,43 @@ export default function CustomerPage() {
               <div className={kpiLabel}>Subscription base</div>
               <div className={kpiValue}>{formatApprox(detail.baseMinor, currency)}</div>
             </div>
+            {detail.costMinor > 0 ? (
+              <>
+                <div className={kpi}>
+                  <div className={kpiLabel}>Cost so far</div>
+                  <div className={kpiValue}>{formatMinor(detail.costMinor, currency)}</div>
+                </div>
+                <div className={kpi}>
+                  <div className={kpiLabel}>Gross margin</div>
+                  <div
+                    className={`mt-2 text-[32px] tabular-nums ${
+                      detail.marginPct !== null && detail.marginPct < 0
+                        ? "text-bad"
+                        : "text-ink-strong"
+                    }`}
+                  >
+                    {detail.marginPct === null
+                      ? "—"
+                      : `${Math.round(detail.marginPct * 100)}%`}
+                  </div>
+                </div>
+              </>
+            ) : null}
           </div>
+
+          {detail.costsByEvent.length > 0 ? (
+            <div className="flex flex-wrap gap-3">
+              {detail.costsByEvent.map((entry) => (
+                <div
+                  className="flex items-center gap-2.5 bg-surface px-4 py-3 text-[14px]"
+                  key={`${entry.event}:${entry.currency}`}
+                >
+                  <span className="font-mono text-[13px] text-ink-muted">{entry.event}</span>
+                  <span>{formatMinor(entry.costMinor, entry.currency)} cost</span>
+                </div>
+              ))}
+            </div>
+          ) : null}
 
           <section>
             <h2 className={sectionTitle}>

@@ -26,6 +26,7 @@ export function RevenueChart({
   if (series.length < 2) {
     return <Empty>Earnings over time appear once a few events have been ingested</Empty>
   }
+  const hasCost = series.some((point) => point.costMinor > 0)
   return (
     <div className="bg-surface px-3 pb-2 pt-4">
       <ResponsiveContainer width="100%" height={220}>
@@ -65,7 +66,10 @@ export function RevenueChart({
               color: "#d9d9d9"
             }}
             labelFormatter={(t) => new Date(Number(t)).toLocaleTimeString()}
-            formatter={(value) => [formatMinor(Number(value), currency), "earned"]}
+            formatter={(value, name) => [
+              formatMinor(Number(value), currency),
+              name === "costMinor" ? "cost" : "earned"
+            ]}
           />
           <Area
             type="monotone"
@@ -77,6 +81,19 @@ export function RevenueChart({
             dot={false}
             activeDot={{ r: 4, fill: "#f5f5f5", stroke: "#121212", strokeWidth: 2 }}
           />
+          {hasCost ? (
+            <Area
+              type="monotone"
+              dataKey="costMinor"
+              stroke="#8a6a6a"
+              strokeWidth={1.5}
+              strokeDasharray="5 4"
+              fill="none"
+              isAnimationActive={false}
+              dot={false}
+              activeDot={{ r: 3.5, fill: "#8a6a6a", stroke: "#121212", strokeWidth: 2 }}
+            />
+          ) : null}
         </AreaChart>
       </ResponsiveContainer>
     </div>

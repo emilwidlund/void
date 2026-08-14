@@ -111,7 +111,9 @@ describe("parse", () => {
 
   it("rejects unknown top-level declarations", () => {
     const { diagnostics } = parseSource("plan pro { }")
-    expect(diagnostics[0]?.message).toContain("expected `meter` or `product`")
+    expect(diagnostics[0]?.message).toContain(
+      "expected `meter`, `product` or `invariant`"
+    )
   })
 
   it("rejects unknown aggregation functions", () => {

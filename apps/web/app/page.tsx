@@ -8,6 +8,7 @@ import { MeterSparklines } from "../components/MeterSparklines"
 import { RevenueChart } from "../components/RevenueChart"
 import { formatApprox, formatMinor, shortChecksum } from "../lib/format"
 import { highlights } from "../lib/insights"
+import { evaluateInvariants } from "../lib/invariants"
 import { meterSeries, revenueSeries } from "../lib/series"
 import { computeSpend } from "../lib/spend"
 import { useDashboard } from "../lib/useDashboard"
@@ -22,7 +23,14 @@ export default function Dashboard() {
   const spend = useMemo(
     () =>
       data?.config
-        ? computeSpend(data.usage, data.config.ir, data.config.deployed_at, new Date())
+        ? computeSpend(
+            data.usage,
+            data.config.ir,
+            data.config.deployed_at,
+            new Date(),
+            data.costs,
+            data.meter_costs
+          )
         : null,
     [data]
   )
@@ -40,6 +48,13 @@ export default function Dashboard() {
         ? highlights(spend, data.usage, data.config.ir, revenue)
         : [],
     [spend, data, revenue]
+  )
+  const violations = useMemo(
+    () =>
+      spend !== null && data?.config
+        ? evaluateInvariants(data.config.ir.invariants, spend)
+        : [],
+    [spend, data]
   )
 
   const healthy = error === null && data !== null
@@ -92,8 +107,35 @@ export default function Dashboard() {
               <span className="text-ink-strong">
                 {customerCount} customer{customerCount === 1 ? "" : "s"}
               </span>
+              {spend.totals.marginPct !== null && spend.totals.projectedCostMinor > 0 ? (
+                <>
+                  , at a{" "}
+                  <span
+                    className={spend.totals.marginPct < 0 ? "text-bad" : "text-ink-strong"}
+                  >
+                    {Math.round(spend.totals.marginPct * 100)}% gross margin
+                  </span>
+                </>
+              ) : null}
               .
             </p>
+          ) : null}
+
+          {violations.length > 0 ? (
+            <div className="flex flex-col gap-2">
+              {violations.map((violation) => (
+                <div
+                  className="flex items-baseline gap-2.5 bg-surface px-4 py-3 text-[14px]"
+                  key={`${violation.name}:${violation.text}`}
+                >
+                  <span className="size-1.5 shrink-0 self-center bg-bad" />
+                  <span className="text-bad">
+                    invariant &ldquo;{violation.name}&rdquo; violated
+                  </span>
+                  <span className="text-ink-muted">{violation.text}</span>
+                </div>
+              ))}
+            </div>
           ) : null}
 
           {insights.length > 0 ? (
@@ -137,6 +179,30 @@ export default function Dashboard() {
                 {formatApprox(spend.totals.baseMinor, currency)}
               </div>
             </div>
+            {spend.totals.costMinor > 0 ? (
+              <>
+                <div className={kpi}>
+                  <div className="text-[13.5px] text-ink-muted">Cost so far</div>
+                  <div className="mt-2 text-[32px] text-ink-strong tabular-nums">
+                    {formatMinor(spend.totals.costMinor, currency)}
+                  </div>
+                </div>
+                <div className={kpi}>
+                  <div className="text-[13.5px] text-ink-muted">Gross margin</div>
+                  <div
+                    className={`mt-2 text-[32px] tabular-nums ${
+                      spend.totals.marginPct !== null && spend.totals.marginPct < 0
+                        ? "text-bad"
+                        : "text-ink-strong"
+                    }`}
+                  >
+                    {spend.totals.marginPct === null
+                      ? "—"
+                      : `${Math.round(spend.totals.marginPct * 100)}%`}
+                  </div>
+                </div>
+              </>
+            ) : null}
             <div className={kpi}>
               <div className="text-[13.5px] text-ink-muted">Paying customers</div>
               <div className="mt-2 text-[32px] text-ink-strong tabular-nums">
@@ -148,7 +214,7 @@ export default function Dashboard() {
           <section>
             <h2 className={sectionTitle}>
               Earnings over time
-              <span className={sectionHint}>usage charges as they accrue</span>
+              <span className={sectionHint}>usage charges vs reported costs</span>
             </h2>
             <RevenueChart currency={currency} series={revenue} />
           </section>

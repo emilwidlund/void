@@ -56,8 +56,28 @@ const ingestHandler = Effect.gen(function* () {
 const usageHandler = Effect.gen(function* () {
   const engine = yield* UsageEngine
   const rows = yield* engine.usage
-  return yield* HttpServerResponse.json({ usage: rows })
+  const costs = yield* engine.costs
+  const meterCosts = yield* engine.meterCosts
+  return yield* HttpServerResponse.json({ usage: rows, costs, meter_costs: meterCosts })
 })
+
+const entitlementsHandler = Effect.gen(function* () {
+  const params = yield* HttpRouter.params
+  const customer = params.customer
+  if (customer === undefined || customer.length === 0) {
+    return yield* HttpServerResponse.json({ error: "missing customer" }, { status: 400 })
+  }
+  const engine = yield* UsageEngine
+  const resolved = yield* engine.entitlements(customer)
+  return yield* HttpServerResponse.json(resolved)
+}).pipe(
+  Effect.catchTag("NoActiveConfig", () =>
+    HttpServerResponse.json(
+      { error: "no billing configuration deployed — deploy one first" },
+      { status: 409 }
+    )
+  )
+)
 
 const configHandler = Effect.gen(function* () {
   const store = yield* ConfigStore
@@ -91,6 +111,7 @@ export const router = HttpRouter.empty.pipe(
   HttpRouter.post("/v1/deploy", deployHandler),
   HttpRouter.post("/v1/events", ingestHandler),
   HttpRouter.get("/v1/usage", usageHandler),
+  HttpRouter.get("/v1/entitlements/:customer", entitlementsHandler),
   HttpRouter.get("/v1/config", configHandler),
   HttpRouter.get("/v1/stream", streamHandler)
 )

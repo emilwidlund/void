@@ -40,7 +40,8 @@ export const IrAggregationSchema = Schema.Union(
 export const IrMeterSchema = Schema.Struct({
   id: Schema.String,
   filter: Schema.NullOr(IrFilterSchema),
-  aggregation: IrAggregationSchema
+  aggregation: IrAggregationSchema,
+  unit: Schema.NullOr(Schema.String)
 })
 
 export const IrPriceSchema = Schema.Union(
@@ -53,18 +54,55 @@ export const IrPriceSchema = Schema.Union(
     type: Schema.Literal("metered"),
     meter: Schema.String,
     per_unit: IrMoneySchema,
-    included_units: Schema.Number
+    included_units: Schema.Number,
+    per: Schema.NullOr(Schema.String),
+    unit_factor: Schema.Number
+  }),
+  Schema.Struct({
+    type: Schema.Literal("metered_margin"),
+    meter: Schema.String,
+    margin: Schema.Number
+  })
+)
+
+export const IrEntitlementSchema = Schema.Union(
+  Schema.Struct({
+    type: Schema.Literal("flag"),
+    id: Schema.String
+  }),
+  Schema.Struct({
+    type: Schema.Literal("limit"),
+    id: Schema.String,
+    limit: Schema.Number
+  }),
+  Schema.Struct({
+    type: Schema.Literal("metered"),
+    id: Schema.String,
+    meter: Schema.String,
+    limit: Schema.Number
   })
 )
 
 export const IrProductSchema = Schema.Struct({
   id: Schema.String,
   name: Schema.String,
-  prices: Schema.Array(IrPriceSchema)
+  prices: Schema.Array(IrPriceSchema),
+  entitlements: Schema.Array(IrEntitlementSchema)
+})
+
+export const IrInvariantSchema = Schema.Struct({
+  name: Schema.String,
+  metric: Schema.Literal("price", "margin", "spend"),
+  meter: Schema.NullOr(Schema.String),
+  op: Schema.Literal("eq", "ne", "gt", "gte", "lt", "lte"),
+  threshold: Schema.Number,
+  currency: Schema.NullOr(Schema.String),
+  behavior: Schema.NullOr(Schema.Literal("warn", "cap", "block", "notify"))
 })
 
 export const BillingIrSchema: Schema.Schema<BillingIr> = Schema.Struct({
   version: Schema.Literal(1),
   meters: Schema.Array(IrMeterSchema),
-  products: Schema.Array(IrProductSchema)
+  products: Schema.Array(IrProductSchema),
+  invariants: Schema.Array(IrInvariantSchema)
 })

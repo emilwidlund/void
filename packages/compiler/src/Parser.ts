@@ -2,9 +2,12 @@ import type {
   Aggregate,
   ComparisonOp,
   Decl,
+  EntitlementField,
   FilterExpr,
   Identifier,
   Interval,
+  InvariantCondition,
+  InvariantThreshold,
   Literal,
   MeterField,
   Money,
@@ -87,9 +90,11 @@ class Parser {
         decls.push(this.parseMeter())
       } else if (keyword === "product") {
         decls.push(this.parseProduct())
+      } else if (keyword === "invariant") {
+        decls.push(this.parseInvariant())
       } else {
         this.fail(
-          `expected \`meter\` or \`product\` declaration, found ${this.describe(this.peek())}`
+          `expected \`meter\`, \`product\` or \`invariant\` declaration, found ${this.describe(this.peek())}`
         )
       }
     }
@@ -133,8 +138,17 @@ class Parser {
         span: { start: start.span.start, end: aggregate.span.end }
       }
     }
+    if (keyword === "unit") {
+      const start = this.advance()
+      const name = this.expectIdent("unit name")
+      return {
+        _tag: "UnitField",
+        name,
+        span: { start: start.span.start, end: name.span.end }
+      }
+    }
     return this.fail(
-      `expected \`filter\` or \`aggregate\`, found ${this.describe(this.peek())}`
+      `expected \`filter\`, \`aggregate\` or \`unit\`, found ${this.describe(this.peek())}`
     )
   }
 
@@ -287,8 +301,12 @@ class Parser {
       const start = this.advance()
       return this.parseMeterBinding(start)
     }
+    if (keyword === "entitlement") {
+      const start = this.advance()
+      return this.parseEntitlement(start)
+    }
     return this.fail(
-      `expected \`name\`, \`price\` or \`meter\`, found ${this.describe(this.peek())}`
+      `expected \`name\`, \`price\`, \`meter\` or \`entitlement\`, found ${this.describe(this.peek())}`
     )
   }
 
@@ -339,10 +357,18 @@ class Parser {
     if (keyword === "per_unit") {
       const start = this.advance()
       const money = this.parseMoney()
+      let per: Identifier | null = null
+      let end = money.currencySpan.end
+      if (this.peekKeyword() === "per") {
+        this.advance()
+        per = this.expectIdent("unit name after `per`")
+        end = per.span.end
+      }
       return {
         _tag: "PerUnitField",
         money,
-        span: { start: start.span.start, end: money.currencySpan.end }
+        per,
+        span: { start: start.span.start, end }
       }
     }
     if (keyword === "included") {
@@ -354,8 +380,147 @@ class Parser {
         span: { start: start.span.start, end: value.span.end }
       }
     }
+    if (keyword === "margin") {
+      const start = this.advance()
+      const value = this.expect("Number", "margin percentage")
+      const percent = this.expect("Percent", "`%` after the margin value")
+      return {
+        _tag: "MarginField",
+        value: value.value,
+        span: { start: start.span.start, end: percent.span.end }
+      }
+    }
     return this.fail(
-      `expected \`per_unit\` or \`included\`, found ${this.describe(this.peek())}`
+      `expected \`per_unit\`, \`included\` or \`margin\`, found ${this.describe(this.peek())}`
+    )
+  }
+
+  // invariant := "invariant" string "{" condition+ "}"
+  // condition := ident "(" ident ")" op threshold
+  private parseInvariant(): Decl {
+    const start = this.expectKeyword("invariant")
+    const name = this.expect("String", "invariant name string")
+    this.expect("LBrace", "`{`")
+    const conditions: Array<InvariantCondition> = []
+    while (this.peek().kind !== "RBrace" && this.peek().kind !== "EOF") {
+      conditions.push(this.parseInvariantCondition())
+    }
+    const end = this.expect("RBrace", "`}`")
+    return {
+      _tag: "InvariantDecl",
+      name: name.value,
+      nameSpan: name.span,
+      conditions,
+      span: { start: start.span.start, end: end.span.end }
+    }
+  }
+
+  private parseInvariantCondition(): InvariantCondition {
+    const metric = this.expectIdent("metric name (price, margin, spend)")
+    this.expect("LParen", "`(`")
+    const arg = this.expectIdent("meter name or `customer`")
+    this.expect("RParen", "`)`")
+    const opToken = this.expect("Op", "comparison operator")
+    if (!(COMPARISON_OPS as ReadonlyArray<string>).includes(opToken.text)) {
+      this.fail(`unknown operator \`${opToken.text}\``, opToken.span)
+    }
+    const threshold = this.parseThreshold()
+    let behavior: Identifier | null = null
+    let end =
+      threshold._tag === "MoneyThreshold"
+        ? threshold.money.currencySpan.end
+        : threshold.span.end
+    if (this.peekKeyword() === "else") {
+      this.advance()
+      behavior = this.expectIdent("behavior (warn, cap, block, notify)")
+      end = behavior.span.end
+    }
+    return {
+      metric,
+      arg,
+      op: opToken.text as ComparisonOp,
+      threshold,
+      behavior,
+      span: { start: metric.span.start, end }
+    }
+  }
+
+  private parseThreshold(): InvariantThreshold {
+    const amount = this.expect("Number", "threshold value")
+    if (this.peek().kind === "Percent") {
+      const percent = this.advance()
+      return {
+        _tag: "PercentThreshold",
+        value: amount.value,
+        span: { start: amount.span.start, end: percent.span.end }
+      }
+    }
+    // Only treat a following identifier as a currency when it looks like one —
+    // the next condition's metric name must not be swallowed.
+    const next = this.peek()
+    if (next.kind === "Ident" && /^[A-Z]{3}(_CENTS)?$/.test(next.value)) {
+      const currency = this.advance()
+      return {
+        _tag: "MoneyThreshold",
+        money: {
+          amount: amount.value,
+          amountSpan: amount.span,
+          currency: currency.value,
+          currencySpan: currency.span
+        }
+      }
+    }
+    return { _tag: "NumberThreshold", value: amount.value, span: amount.span }
+  }
+
+  // entitlement := "entitlement" ident block? ; block := "{" (limit | meter)* "}"
+  private parseEntitlement(start: Token): ProductField {
+    const id = this.expectIdent("entitlement name")
+    if (this.peek().kind !== "LBrace") {
+      // Bare form: a boolean feature grant.
+      return {
+        _tag: "EntitlementField",
+        id,
+        fields: [],
+        span: { start: start.span.start, end: id.span.end }
+      }
+    }
+    this.advance()
+    const fields: Array<EntitlementField> = []
+    while (this.peek().kind !== "RBrace" && this.peek().kind !== "EOF") {
+      fields.push(this.parseEntitlementField())
+    }
+    const end = this.expect("RBrace", "`}`")
+    return {
+      _tag: "EntitlementField",
+      id,
+      fields,
+      span: { start: start.span.start, end: end.span.end }
+    }
+  }
+
+  private parseEntitlementField(): EntitlementField {
+    const keyword = this.peekKeyword()
+    if (keyword === "limit") {
+      const start = this.advance()
+      const value = this.expect("Number", "limit value")
+      return {
+        _tag: "LimitField",
+        value: value.value,
+        span: { start: start.span.start, end: value.span.end }
+      }
+    }
+    if (keyword === "meter") {
+      const start = this.advance()
+      const meter = this.expectIdent("meter name")
+      return {
+        _tag: "EntitlementMeterField",
+        meter,
+        span: { start: start.span.start, end: meter.span.end }
+      }
+    }
+    return this.fail(
+      `expected \`limit\` or \`meter\`, found ${this.describe(this.peek())}`
     )
   }
 

@@ -1,5 +1,5 @@
 import type { BillingIr } from "@void/compiler"
-import type { UsageRow } from "./types"
+import type { CostRow, MeterCostRow, UsageRow } from "./types"
 
 export const PERIOD_DAYS = 30
 const MS_PER_DAY = 86_400_000
@@ -28,6 +28,8 @@ export interface MeterSpendLine {
   readonly accruedMinor: number
   readonly projectedUnits: number
   readonly projectedMinor: number
+  /** target gross margin for cost-derived (`margin`) pricing, else null */
+  readonly marginTarget: number | null
 }
 
 export interface CustomerSpend {
@@ -40,6 +42,27 @@ export interface CustomerSpend {
   readonly accruedMinor: number
   /** base + projected metered spend over the next PERIOD_DAYS, in minor units */
   readonly projectedMinor: number
+  /** base + metered accrued before any `else cap` clamp, in minor units */
+  readonly uncappedSpendMinor: number
+  /** the lowest applicable `else cap` spend ceiling, in minor units, or null */
+  readonly capMinor: number | null
+  /** spend forgone to the cap so far this period, in minor units */
+  readonly cappedMinor: number
+  /** reported `_cost` accrued so far, in minor units */
+  readonly costMinor: number
+  /** cost run rate extrapolated over PERIOD_DAYS, in minor units */
+  readonly projectedCostMinor: number
+  /**
+   * Projected gross margin: (projected revenue − projected cost) / projected
+   * revenue. Null when there is no projected revenue to divide by.
+   */
+  readonly marginPct: number | null
+  /** cost accrued per event name and currency, largest first, in minor units */
+  readonly costsByEvent: ReadonlyArray<{
+    readonly event: string
+    readonly currency: string
+    readonly costMinor: number
+  }>
   readonly currency: string
   readonly lines: ReadonlyArray<MeterSpendLine>
 }
@@ -50,6 +73,11 @@ export interface SpendOverview {
     readonly baseMinor: number
     readonly accruedMinor: number
     readonly projectedMinor: number
+    readonly costMinor: number
+    readonly projectedCostMinor: number
+    readonly marginPct: number | null
+    /** total spend forgone to `else cap` ceilings this period, in minor units */
+    readonly cappedMinor: number
     readonly currency: string
   }
   readonly elapsedDays: number
@@ -66,7 +94,9 @@ export const computeSpend = (
   usage: ReadonlyArray<UsageRow>,
   ir: BillingIr,
   deployedAt: string,
-  now: Date
+  now: Date,
+  costs: ReadonlyArray<CostRow> = [],
+  meterCosts: ReadonlyArray<MeterCostRow> = []
 ): SpendOverview => {
   const elapsedDays = Math.max(
     (now.getTime() - new Date(deployedAt).getTime()) / MS_PER_DAY,
@@ -80,6 +110,24 @@ export const computeSpend = (
     rows.push(row)
     byCustomer.set(row.customer, rows)
   }
+  // Customers that only reported costs still show up — they're pure loss.
+  for (const row of costs) {
+    if (!byCustomer.has(row.customer)) byCustomer.set(row.customer, [])
+  }
+
+  const costsFor = (customer: string) =>
+    costs
+      .filter((row) => row.customer === customer)
+      .map((row) => ({ event: row.event, currency: row.currency, costMinor: row.cost_minor }))
+      .sort((a, b) => b.costMinor - a.costMinor)
+
+  // The lowest `spend(customer) ... else cap` ceiling clamps period bills.
+  const capMinor = ir.invariants
+    .filter((inv) => inv.metric === "spend" && inv.meter === null && inv.behavior === "cap")
+    .reduce<number | null>(
+      (lowest, inv) => (lowest === null ? inv.threshold : Math.min(lowest, inv.threshold)),
+      null
+    )
 
   let currency = "USD"
   const customers: Array<CustomerSpend> = []
@@ -90,25 +138,55 @@ export const computeSpend = (
 
     for (const product of ir.products) {
       for (const price of product.prices) {
-        if (price.type !== "metered") continue
+        if (price.type === "recurring") continue
         const row = rows.find((r) => r.meter === price.meter)
-        if (row === undefined) continue
+        if (price.type === "metered") {
+          if (row === undefined) continue
+          attributed.set(product.id, product)
+          currency = price.per_unit.currency
+          const perUnitMinor = Number(price.per_unit.amount)
+          // Usage in meter units -> priced units ("per second" on a ms meter)
+          const pricedUnits = row.value / price.unit_factor
+          const projectedUnits = pricedUnits * runRate
+          lines.push({
+            product: product.id,
+            productName: product.name,
+            meter: price.meter,
+            aggregation: row.aggregation,
+            units: pricedUnits,
+            includedUnits: price.included_units,
+            includedUsed:
+              price.included_units > 0 ? pricedUnits / price.included_units : null,
+            perUnitMinor,
+            accruedMinor: Math.max(0, pricedUnits - price.included_units) * perUnitMinor,
+            projectedUnits,
+            projectedMinor: Math.max(0, projectedUnits - price.included_units) * perUnitMinor,
+            marginTarget: null
+          })
+          continue
+        }
+        // Cost-derived pricing: charge = attributed cost / (1 - margin), so
+        // the configured gross margin holds whatever the units cost.
+        const attributedCost = meterCosts
+          .filter((mc) => mc.meter === price.meter && mc.customer === customer)
+          .reduce((sum, mc) => sum + mc.cost_minor, 0)
+        if (row === undefined && attributedCost === 0) continue
         attributed.set(product.id, product)
-        currency = price.per_unit.currency
-        const perUnitMinor = Number(price.per_unit.amount)
-        const projectedUnits = row.value * runRate
+        const accrued = attributedCost / (1 - price.margin)
+        const units = row?.value ?? 0
         lines.push({
           product: product.id,
           productName: product.name,
           meter: price.meter,
-          aggregation: row.aggregation,
-          units: row.value,
-          includedUnits: price.included_units,
-          includedUsed: price.included_units > 0 ? row.value / price.included_units : null,
-          perUnitMinor,
-          accruedMinor: Math.max(0, row.value - price.included_units) * perUnitMinor,
-          projectedUnits,
-          projectedMinor: Math.max(0, projectedUnits - price.included_units) * perUnitMinor
+          aggregation: row?.aggregation ?? "cost",
+          units,
+          includedUnits: 0,
+          includedUsed: null,
+          perUnitMinor: units > 0 ? accrued / units : 0,
+          accruedMinor: accrued,
+          projectedUnits: units * runRate,
+          projectedMinor: accrued * runRate,
+          marginTarget: price.margin
         })
       }
     }
@@ -125,12 +203,36 @@ export const computeSpend = (
     const accruedMinor = lines.reduce((sum, line) => sum + line.accruedMinor, 0)
     const projectedMetered = lines.reduce((sum, line) => sum + line.projectedMinor, 0)
 
+    const costsByEvent = costsFor(customer)
+    const costMinor = costsByEvent.reduce((sum, entry) => sum + entry.costMinor, 0)
+    const projectedCostMinor = costMinor * runRate
+
+    // Apply the cap: the base bills first, usage charges absorb the clamp.
+    const uncappedSpendMinor = baseMinor + accruedMinor
+    let billedAccrued = accruedMinor
+    let cappedMinor = 0
+    if (capMinor !== null && uncappedSpendMinor > capMinor) {
+      cappedMinor = uncappedSpendMinor - capMinor
+      billedAccrued = Math.max(0, capMinor - baseMinor)
+    }
+    const uncappedProjected = baseMinor + projectedMetered
+    const projectedMinor =
+      capMinor !== null ? Math.min(uncappedProjected, capMinor) : uncappedProjected
+
     customers.push({
       customer,
       products: [...attributed.values()].map((product) => product.name),
       baseMinor,
-      accruedMinor,
-      projectedMinor: baseMinor + projectedMetered,
+      accruedMinor: billedAccrued,
+      projectedMinor,
+      uncappedSpendMinor,
+      capMinor,
+      cappedMinor,
+      costMinor,
+      projectedCostMinor,
+      marginPct:
+        projectedMinor > 0 ? (projectedMinor - projectedCostMinor) / projectedMinor : null,
+      costsByEvent,
       currency,
       lines: lines.sort((a, b) => b.projectedMinor - a.projectedMinor)
     })
@@ -140,12 +242,20 @@ export const computeSpend = (
     (a, b) => b.projectedMinor - a.projectedMinor || a.customer.localeCompare(b.customer)
   )
 
+  const totalProjected = customers.reduce((sum, c) => sum + c.projectedMinor, 0)
+  const totalProjectedCost = customers.reduce((sum, c) => sum + c.projectedCostMinor, 0)
+
   return {
     customers,
     totals: {
       baseMinor: customers.reduce((sum, c) => sum + c.baseMinor, 0),
       accruedMinor: customers.reduce((sum, c) => sum + c.accruedMinor, 0),
-      projectedMinor: customers.reduce((sum, c) => sum + c.projectedMinor, 0),
+      projectedMinor: totalProjected,
+      costMinor: customers.reduce((sum, c) => sum + c.costMinor, 0),
+      projectedCostMinor: totalProjectedCost,
+      marginPct:
+        totalProjected > 0 ? (totalProjected - totalProjectedCost) / totalProjected : null,
+      cappedMinor: customers.reduce((sum, c) => sum + c.cappedMinor, 0),
       currency
     },
     elapsedDays

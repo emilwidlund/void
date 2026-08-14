@@ -9,10 +9,24 @@ const source = `
   }
   meter compute_seconds {
     aggregate sum(event.duration_s)
+    unit seconds
+  }
+  invariant "bill shock" { spend(customer) <= 500 USD }
+  invariant "healthy compute" { margin(customer) >= 20% }
+  product unit_product {
+    name "Unit Product"
+    meter compute_seconds { per_unit 3.6 USD per hour }
+  }
+  product margin_product {
+    name "Margin Product"
+    meter compute_seconds { margin 60% }
   }
   product pro {
     name "Pro Plan"
     price recurring monthly 29 USD
+    entitlement sso
+    entitlement seats { limit 5 }
+    entitlement api_quota { meter api_calls limit 100_000 }
     meter api_calls {
       per_unit 10 USD_CENTS
       included 10_000

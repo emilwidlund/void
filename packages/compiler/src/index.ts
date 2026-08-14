@@ -14,6 +14,7 @@ export * from "./Ir.js"
 export * from "./IrSchema.js"
 export * from "./Lexer.js"
 export * from "./Parser.js"
+export * from "./Units.js"
 
 export class CompileError extends Data.TaggedError("CompileError")<{
   readonly diagnostics: ReadonlyArray<Diagnostic>

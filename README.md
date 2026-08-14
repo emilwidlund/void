@@ -18,6 +18,9 @@ meter compute_seconds {
 product pro {
   name "Pro Plan"
   price recurring monthly 29 USD
+  entitlement sso
+  entitlement seats { limit 5 }
+  entitlement api_quota { meter api_calls limit 100_000 }
   meter api_calls {
     per_unit 10 USD_CENTS
     included 10_000
@@ -56,12 +59,60 @@ non-2xx response exits 1, so it drops straight into a CI/CD pipeline.
     `<`, `<=`) over `event.*` properties, combined with `and` / `or` and
     parentheses (`and` binds tighter).
   - `aggregate <fn>` — `count`, or `sum|max|min|avg|unique(event.<property>)`.
+  - `unit <name>` — what one aggregated unit *is* (`unit seconds`,
+    `unit gb`, `unit tokens`). Known units carry a dimension — time
+    (`ms`/`seconds`/`minutes`/`hours`/`days`) and data
+    (`bytes`/`kb`/`mb`/`gb`/`tb`) — with conversion factors; anything else
+    (`tokens`, `requests`, `seats`) is an opaque unit that only matches
+    itself. Names are normalized (`seconds` ≡ `sec` ≡ `s`).
 - **`product <id> { ... }`** — a sellable product.
   - `name "..."` — display name (required).
   - `price recurring <monthly|yearly|weekly|daily> <amount> <currency>`
   - `meter <id> { per_unit <amount> <currency>  included <n> }` — binds a
     top-level meter to the product with its usage pricing. The same meter can
     be priced differently by different products.
+
+    `per_unit` takes an optional `per <unit>` suffix — `per_unit 3.6 USD per
+    hour` on a meter that records seconds. The compiler checks dimensions:
+    pricing bytes per hour is a compile error (VOID120), while same-dimension
+    pairs auto-convert via a `unit_factor` in the IR (a ms meter priced per
+    second divides usage by 1000 before charging). `included` allowances are
+    in priced units. Pricing wrong-by-1000 unit bugs die at compile time —
+    the kind of guarantee a billing dashboard can't give you.
+  - `meter <id> { margin <pct>% }` — cost-derived pricing: instead of a fixed
+    unit price, the charge is the meter's attributed `_cost` divided by
+    `(1 - margin)`, so the configured gross margin holds whatever the units
+    actually cost (the natural pricing for AI workloads with volatile
+    upstream costs). Mutually exclusive with `per_unit`/`included`.
+  - `entitlement <id>` — what the product grants beyond billing, in three
+    forms: a bare `entitlement sso` is a boolean feature grant,
+    `entitlement seats { limit 5 }` is a static numeric limit, and
+    `entitlement api_quota { meter api_calls limit 100_000 }` is a usage cap
+    checked against a top-level meter's live aggregation. Limits vary per
+    product, so entitlements are declared inline rather than at the top level.
+- **`invariant "<name>" { <metric>(<subject>) <op> <threshold> }`** — a
+  property the billing system must uphold, declared next to the pricing it
+  constrains. Meter-scoped metrics are **compile-checked**: `price(api_calls)
+  >= 5 USD_CENTS` and `margin(compute_seconds) >= 40%` are proven against
+  every product at `void check` time, and a violation fails the build (so a
+  price cut that breaks a floor dies in CI). Customer-scoped metrics are
+  **runtime-monitored**: `spend(customer) <= 500 USD` and `margin(customer)
+  >= 20%` ship in the IR and are evaluated against live billing state, with
+  violations surfacing as alerts on the dashboard. A block may hold several
+  conditions; each is checked independently.
+
+  A condition takes an optional **`else <behavior>`** — the remedy applied
+  when it's violated. Behaviors are remedies, not suppressions: the violation
+  still surfaces, alongside a record of the remedy. `else warn` softens a
+  compile-checked violation to a warning (the incremental-adoption path);
+  `else cap` clamps the period bill at the threshold (the base bills first,
+  usage charges absorb the clamp — the lowest applicable cap wins); `else
+  block` flips `enforcement` to `"blocked"` on the entitlements endpoint so
+  the application can stop serving the customer; `else notify` emits an
+  alert. The checker enforces a validity matrix — compile-checked invariants
+  only take `warn`, `margin(customer)` takes `warn`/`notify` (you can't cap
+  your way out of your own costs), `spend(customer)` takes all four —
+  rejecting nonsense combos like `price(m) else cap` at compile time.
 - **Money** — `29.99 USD` is major units; a `_CENTS` suffix (`10 USD_CENTS`)
   means minor units. The IR normalizes everything to decimal strings in minor
   units, so sub-cent unit prices stay exact (`0.001 USD` → `"0.1"` cents).
@@ -92,12 +143,31 @@ Endpoints:
   (count/sum/max/min/avg/unique), keyed per customer (`anonymous` when no
   customer id is given). Responds 202 with a per-meter match summary, or 409
   if no config has been deployed yet.
-- `GET /v1/usage` — aggregated usage per meter and customer.
+
+  Events may carry an optional **`_cost`** — what serving the event cost you:
+  `"_cost": { "amount": 0.0042, "currency": "USD" }` (amount in major units,
+  the natural shape for AI/LLM workloads). Costs accumulate per customer and
+  event name regardless of whether any meter matches, and are additionally
+  attributed to every meter whose filter matches the event (overlapping
+  meters double-count) — that attribution is what `margin` pricing bills
+  against. They power the dashboard's margin analytics.
+- `GET /v1/usage` — aggregated usage per meter and customer, plus accumulated
+  `_cost` per customer and event name, and per meter (in minor units).
+- `GET /v1/entitlements/:customer` — resolves the customer's entitlements from
+  the active config: flags and limits as declared, and metered entitlements
+  with live `used` / `remaining` / `exceeded` computed from that customer's
+  usage. Also the enforcement surface for invariants: the response carries
+  `violations` (customer-scoped `spend` invariants currently violated, with
+  their remedies) and `enforcement: "ok" | "blocked"` — `"blocked"` when a
+  violated invariant carries `else block`, telling the application to stop
+  serving the customer. With no subscription data yet, a customer is
+  attributed to a product when they have usage on one of its metered meters
+  (the same heuristic the dashboard uses). 409 if no config is deployed.
 - `GET /v1/config` — the active config version.
-- `GET /v1/stream` — server-sent events: a full `{ usage, config, history }`
-  snapshot on connect, then one per ingested batch or deploy (the dashboard's
-  live feed). `history` is the last 600 change-points of usage, which powers
-  the dashboard's charts.
+- `GET /v1/stream` — server-sent events: a full `{ usage, config, history,
+  costs, meter_costs }` snapshot on connect, then one per ingested batch or
+  deploy (the dashboard's live feed). `history` is the last 600 change-points
+  of usage and cost, which powers the dashboard's charts.
 - `GET /health` — liveness check.
 
 State is in-memory for now — a real deployment would back the config store and
@@ -105,8 +175,10 @@ usage state with a database.
 
 To generate traffic, `pnpm simulate` streams random events (~5/sec, mixed
 `api.request` / `compute.done` / unmatched noise across a handful of fake
-customers) at the ingestion endpoint until you Ctrl-C it. `EVENTS_PER_SECOND`
-and `VOID_SERVER_URL` override the defaults.
+customers) at the ingestion endpoint until you Ctrl-C it. Compute events carry
+a GPU-second `_cost` and some API requests carry an LLM-ish `_cost`, so the
+margin analytics light up out of the box. `EVENTS_PER_SECOND` and
+`VOID_SERVER_URL` override the defaults.
 
 ## Dashboard
 
@@ -117,26 +189,43 @@ are ingested (set `VOID_SERVER_URL` on the web process if the server isn't on
 `localhost:4000` — it's read at request time, never baked into the build or
 exposed to the browser). The overview shows:
 
-- **Earnings** — usage charges accrued so far and a projection for the month,
-  as a headline sentence, KPI tiles (usage earnings, expected this month,
-  subscription base, paying customers), and an earnings-over-time chart.
+- **Earnings & margins** — usage charges accrued so far and a projection for
+  the month, as a headline sentence, KPI tiles (usage earnings, expected this
+  month, subscription base, paying customers — plus cost so far and gross
+  margin when events report `_cost`), and an earnings-over-time chart with a
+  cost overlay.
 - **Insights** — auto-generated highlights: revenue concentration in a top
   customer, customers past their included allowance and billing overage,
-  recent earning-pace changes, and metered usage no product prices.
-- **Customers** — spend per customer, each linking to a detail page
-  (`/customers/<id>`) with that customer's own KPIs, earnings chart, meter
-  breakdown, and usage activity.
+  recent earning-pace changes, metered usage no product prices, customers
+  whose costs exceed their revenue, and thin or healthy overall gross margin.
+- **Customers** — spend and margin per customer, each linking to a detail page
+  (`/customers/<id>`) with that customer's own KPIs (including cost and gross
+  margin), earnings-vs-cost chart, cost-by-event breakdown, meter breakdown,
+  and usage activity.
 - **Usage activity** — per-meter volume sparklines across all customers.
+- **Invariant violations** — customer-scoped invariants from the deployed
+  config are evaluated against live spend and margins; violations show as
+  alert banners at the top of the overview, annotated with the applied remedy
+  (capped, blocked, notified). `else cap` ceilings actually clamp the spend
+  model's billed and projected figures — capped bills are judged against
+  uncapped spend so the violation stays visible — and an insight reports the
+  revenue absorbed by caps.
 - **Billing configuration** — a collapsible panel with the active version's
-  meters (filters + aggregations rendered back as DSL-ish text) and products
-  with their prices, straight from the deployed IR.
+  meters (filters + aggregations rendered back as DSL-ish text), products
+  with their prices, and declared invariants (tagged compile-checked or
+  live), straight from the deployed IR.
 
 The spend model is deliberately naive while the config has no subscription
 data: a customer is attributed to a product when they have usage on one of its
 metered meters, which contributes that product's recurring fees (normalized to
 a 30-day period) as their base. Metered spend prices usage beyond each
 `included` allowance, and projections extrapolate the run rate observed since
-the config was deployed.
+the config was deployed. Gross margin compares projected revenue (base +
+metered) against reported `_cost` extrapolated at the same run rate; costs in
+a different currency than pricing are flagged in insights but not converted.
+Margin-priced meters charge attributed cost / (1 - margin), so their gross
+margin holds by construction. Customers that only report costs still appear —
+they're pure loss.
 
 Common commands: `pnpm build`, `pnpm test`, `pnpm typecheck` (all via Turborepo),
 and `pnpm --filter @void/cli dev` to run the CLI from source.

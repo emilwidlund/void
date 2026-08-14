@@ -22,29 +22,41 @@ interface SimEvent {
   readonly name: string
   readonly external_customer_id: string
   readonly properties: Record<string, string | number | boolean>
+  /** optional cost of serving the event, amount in major units */
+  readonly _cost?: { readonly amount: number; readonly currency: string }
 }
+
+const round6 = (value: number) => Math.round(value * 1e6) / 1e6
 
 const randomEvent = (): SimEvent => {
   const external_customer_id = pick(CUSTOMERS)
   const roll = Math.random()
   if (roll < 0.6) {
+    // ~40% of API requests hit an LLM behind the scenes and carry its cost
+    const llm = Math.random() < 0.4
     return {
       name: "api.request",
       external_customer_id,
       properties: {
         path: pick(API_PATHS),
         status_code: pick([200, 200, 200, 200, 201, 400, 404, 500])
-      }
+      },
+      ...(llm
+        ? { _cost: { amount: round6(0.0005 + Math.random() * 0.004), currency: "USD" } }
+        : {})
     }
   }
   if (roll < 0.9) {
+    const duration_s = Math.round((0.5 + Math.random() * 29.5) * 100) / 100
     return {
       name: "compute.done",
       external_customer_id,
       properties: {
         status: Math.random() < 0.85 ? "success" : "failed",
-        duration_s: Math.round((0.5 + Math.random() * 29.5) * 100) / 100
-      }
+        duration_s
+      },
+      // GPU-second pricing: costs accrue on failures too
+      _cost: { amount: round6(duration_s * 0.00035), currency: "USD" }
     }
   }
   return { name: pick(OTHER_EVENTS), external_customer_id, properties: {} }

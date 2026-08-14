@@ -6,19 +6,23 @@ export interface RevenuePoint {
   readonly t: number
   /** accrued metered revenue at this point, in minor units */
   readonly accruedMinor: number
+  /** accrued reported `_cost` at this point, in minor units */
+  readonly costMinor: number
 }
 
-/** Narrows every history point to a single customer's usage rows. */
+/** Narrows every history point to a single customer's usage and cost rows. */
 export const filterHistory = (
   history: ReadonlyArray<HistoryPoint>,
   customer: string
 ): ReadonlyArray<HistoryPoint> =>
   history.map((point) => ({
     at: point.at,
-    usage: point.usage.filter((row) => row.customer === customer)
+    usage: point.usage.filter((row) => row.customer === customer),
+    costs: point.costs.filter((row) => row.customer === customer),
+    meter_costs: point.meter_costs.filter((row) => row.customer === customer)
   }))
 
-/** Accrued metered revenue at each history point, priced with the active config. */
+/** Accrued metered revenue and cost at each history point, priced with the active config. */
 export const revenueSeries = (
   history: ReadonlyArray<HistoryPoint>,
   ir: BillingIr,
@@ -26,8 +30,15 @@ export const revenueSeries = (
 ): ReadonlyArray<RevenuePoint> =>
   history.map((point) => ({
     t: new Date(point.at).getTime(),
-    accruedMinor: computeSpend(point.usage, ir, deployedAt, new Date(point.at)).totals
-      .accruedMinor
+    accruedMinor: computeSpend(
+      point.usage,
+      ir,
+      deployedAt,
+      new Date(point.at),
+      point.costs,
+      point.meter_costs
+    ).totals.accruedMinor,
+    costMinor: point.costs.reduce((sum, row) => sum + row.cost_minor, 0)
   }))
 
 export interface MeterPoint {

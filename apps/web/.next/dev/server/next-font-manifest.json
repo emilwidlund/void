@@ -1,8 +1,5 @@
 {
   "app": {
-    "[project]/apps/web/app/customers/[customer]/page": [
-      "static/media/PPNeueMontreal_VariableUpright-s.p.0i-lo0--5wsek.woff2"
-    ],
     "[project]/apps/web/app/page": [
       "static/media/PPNeueMontreal_VariableUpright-s.p.0i-lo0--5wsek.woff2"
     ]
