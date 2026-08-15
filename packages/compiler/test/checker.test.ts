@@ -180,6 +180,94 @@ describe("check", () => {
     expect(diagnostics.map((d) => d.code)).toContain("VOID135")
   })
 
+  it("accepts a well-formed outcome and its references", () => {
+    const diagnostics = checkSource(`
+      outcome resolution {
+        correlate event.ticket_id
+        step event.name == "ticket.closed"
+        fail_on event.name == "ticket.reopened" within 7 days
+      }
+      product agent {
+        name "A"
+        outcome resolution { per_unit 2 USD }
+        entitlement quota { meter resolution limit 100 }
+      }
+      invariant "floor" { price(resolution) >= 1 USD }
+    `)
+    expect(diagnostics).toEqual([])
+  })
+
+  it("requires correlate and at least one step on outcomes", () => {
+    const diagnostics = checkSource(`outcome empty { }`)
+    const codes = diagnostics.map((d) => d.code)
+    expect(codes).toContain("VOID140")
+    expect(codes).toContain("VOID141")
+  })
+
+  it("keeps meter and outcome binding namespaces straight", () => {
+    const diagnostics = checkSource(`
+      meter m { aggregate count }
+      outcome o { correlate event.id step event.name == "x" }
+      product p {
+        name "P"
+        outcome m { per_unit 1 USD }
+        meter o { per_unit 1 USD }
+      }
+    `)
+    expect(diagnostics.filter((d) => d.code === "VOID142")).toHaveLength(2)
+  })
+
+  it("rejects margin pricing on outcomes", () => {
+    const diagnostics = checkSource(`
+      outcome o { correlate event.id step event.name == "x" }
+      product p { name "P" outcome o { margin 50% } }
+    `)
+    expect(diagnostics.map((d) => d.code)).toContain("VOID143")
+  })
+
+  it("rejects reverse_on with non-reversible aggregations", () => {
+    const diagnostics = checkSource(`
+      meter m {
+        aggregate avg(event.latency)
+        reverse_on event.name == "x"
+      }
+    `)
+    expect(diagnostics.map((d) => d.code)).toContain("VOID123")
+  })
+
+  it("rejects non-time reverse windows", () => {
+    const diagnostics = checkSource(`
+      meter m {
+        aggregate count
+        reverse_on event.name == "x" within 5 gb
+      }
+    `)
+    expect(diagnostics.map((d) => d.code)).toContain("VOID124")
+  })
+
+  it("rejects invalid override dates and name overrides", () => {
+    const diagnostics = checkSource(`
+      meter m { aggregate count }
+      override customer "acme" {
+        until "soon"
+        name "Nope"
+        meter m { per_unit 1 USD }
+      }
+    `)
+    const codes = diagnostics.map((d) => d.code)
+    expect(codes).toContain("VOID125")
+    expect(codes).toContain("VOID126")
+  })
+
+  it("rejects duplicate overrides for a customer", () => {
+    const diagnostics = checkSource(`
+      meter m { aggregate count }
+      override customer "acme" { meter m { per_unit 1 USD } }
+      override customer "acme" { meter m { per_unit 2 USD } }
+    `)
+    expect(diagnostics.map((d) => d.code)).toContain("VOID127")
+  })
+
   it("rejects pricing across unit dimensions", () => {
     const diagnostics = checkSource(`
       meter transfer { aggregate sum(event.bytes)  unit bytes }
@@ -196,10 +284,18 @@ describe("check", () => {
     expect(diagnostics).toEqual([])
   })
 
-  it("rejects mismatched custom units", () => {
+  it("rejects unknown units on meters and prices", () => {
     const diagnostics = checkSource(`
       meter llm { aggregate sum(event.tokens)  unit tokens }
       product pro { name "P" meter llm { per_unit 1 USD per request } }
+    `)
+    expect(diagnostics.filter((d) => d.code === "VOID122")).toHaveLength(2)
+  })
+
+  it("rejects pricing scalar counts per a dimensioned unit", () => {
+    const diagnostics = checkSource(`
+      meter api_calls { aggregate count  unit scalar }
+      product pro { name "P" meter api_calls { per_unit 1 USD per hour } }
     `)
     expect(diagnostics.map((d) => d.code)).toContain("VOID120")
   })

@@ -20,7 +20,12 @@ export function ConfigPanel({ config }: { readonly config: ActiveConfig }) {
               </span>
               {meter.unit ? (
                 <span className="bg-surface-2 px-1.5 font-mono text-[12px] text-ink-muted">
-                  {meter.unit}s
+                  {meter.unit === "scalar" ? "scalar" : `${meter.unit}s`}
+                </span>
+              ) : null}
+              {meter.reverse ? (
+                <span className="bg-surface-2 px-1.5 font-mono text-[12px] text-ink-muted">
+                  reversible
                 </span>
               ) : null}
             </div>
@@ -90,6 +95,108 @@ export function ConfigPanel({ config }: { readonly config: ActiveConfig }) {
           </div>
         ))}
       </div>
+      {config.ir.outcomes.length > 0 ? (
+        <div className="bg-surface p-5">
+          <h3 className="mb-3 text-ink-strong">
+            Outcomes{" "}
+            <span className="text-[13.5px] text-ink-muted">
+              {config.ir.outcomes.length}
+            </span>
+          </h3>
+          {config.ir.outcomes.map((outcome) => (
+            <div className={entity} key={outcome.id}>
+              <div className="flex items-center gap-2.5 text-ink-strong">
+                <span className="font-mono text-[13px]">{outcome.id}</span>
+                <span className="bg-surface-2 px-1.5 font-mono text-[12px] text-ink-muted">
+                  by {outcome.correlate}
+                </span>
+              </div>
+              {outcome.steps.map((step, index) => (
+                <div className="font-mono text-[12.5px] text-ink-muted" key={index}>
+                  {index + 1}. {formatFilter(step)}
+                </div>
+              ))}
+              {outcome.fail ? (
+                <div className="font-mono text-[12.5px] text-bad/80">
+                  fails on {formatFilter(outcome.fail.filter)}
+                  {outcome.fail.window_s !== null
+                    ? ` within ${Math.round(outcome.fail.window_s / 86400)}d`
+                    : ""}
+                </div>
+              ) : null}
+            </div>
+          ))}
+        </div>
+      ) : null}
+      {config.ir.overrides.length > 0 ? (
+        <div className="bg-surface p-5">
+          <h3 className="mb-3 text-ink-strong">
+            Customer overrides{" "}
+            <span className="text-[13.5px] text-ink-muted">
+              {config.ir.overrides.length}
+            </span>
+          </h3>
+          {config.ir.overrides.map((override) => (
+            <div className={entity} key={override.customer}>
+              <div className="flex items-center gap-2.5 text-ink-strong">
+                {override.customer}
+                {override.until ? (
+                  <span className="bg-surface-2 px-1.5 font-mono text-[12px] text-ink-muted">
+                    until {override.until}
+                  </span>
+                ) : null}
+              </div>
+              {override.prices.map((price, index) => (
+                <div className="flex justify-between gap-3 text-[14px]" key={index}>
+                  {price.type === "recurring" ? (
+                    <>
+                      <span className="text-ink-muted">recurring / {price.interval}</span>
+                      <span>{formatMoney(price.amount)}</span>
+                    </>
+                  ) : price.type === "metered" ? (
+                    <>
+                      <span className="text-ink-muted">
+                        metered ·{" "}
+                        <span className="font-mono text-[13px]">{price.meter}</span>
+                        {price.included_units > 0
+                          ? ` · ${price.included_units.toLocaleString("en-US")} included`
+                          : ""}
+                      </span>
+                      <span>
+                        {formatMoney(price.per_unit)} / {price.per ?? "unit"}
+                      </span>
+                    </>
+                  ) : (
+                    <>
+                      <span className="text-ink-muted">
+                        cost-plus ·{" "}
+                        <span className="font-mono text-[13px]">{price.meter}</span>
+                      </span>
+                      <span>{Math.round(price.margin * 100)}% margin</span>
+                    </>
+                  )}
+                </div>
+              ))}
+              {override.entitlements.length > 0 ? (
+                <div className="flex flex-wrap gap-1.5">
+                  {override.entitlements.map((entitlement) => (
+                    <span
+                      className="bg-surface-2 px-1.5 py-0.5 font-mono text-[12px] text-ink-muted"
+                      key={entitlement.id}
+                    >
+                      {entitlement.type === "flag"
+                        ? entitlement.id
+                        : entitlement.type === "limit"
+                          ? `${entitlement.id} ≤ ${entitlement.limit.toLocaleString("en-US")}`
+                          : `${entitlement.id} · ${entitlement.meter} ≤ ${entitlement.limit.toLocaleString("en-US")}`}
+                    </span>
+                  ))}
+                </div>
+              ) : null}
+            </div>
+          ))}
+        </div>
+      ) : null}
       {config.ir.invariants.length > 0 ? (
         <div className="bg-surface p-5">
           <h3 className="mb-3 text-ink-strong">

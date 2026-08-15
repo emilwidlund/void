@@ -173,9 +173,13 @@ export const blockContext = (source: string, offset: number): ReadonlyArray<stri
 /** Top-level meter names, by parse when possible and by regex while typing. */
 export const knownMeters = (source: string): ReadonlyArray<string> => {
   const file = parseFile(source)
-  if (file !== null) return meterDecls(file).map((decl) => decl.id.name)
+  if (file !== null) {
+    return file.decls.flatMap((decl) =>
+      decl._tag === "MeterDecl" || decl._tag === "OutcomeDecl" ? [decl.id.name] : []
+    )
+  }
   const names: Array<string> = []
-  for (const match of source.matchAll(/^meter\s+([A-Za-z_][A-Za-z0-9_]*)/gm)) {
+  for (const match of source.matchAll(/^(?:meter|outcome)\s+([A-Za-z_][A-Za-z0-9_]*)/gm)) {
     names.push(match[1]!)
   }
   return names
@@ -217,6 +221,14 @@ const AGGREGATE_ITEMS: ReadonlyArray<Completion> = [
 ]
 
 const NUMBER_PATTERN = /^\d[\d_]*(\.\d[\d_]*)?$/
+
+const TIME_UNIT_ITEMS: ReadonlyArray<Completion> = [
+  "ms",
+  "seconds",
+  "minutes",
+  "hours",
+  "days"
+].map((name) => ({ label: name, kind: 6, detail: "time unit" }))
 const CURRENCY_PATTERN = /^[A-Z]{3}(_CENTS)?$/
 const EVENT_PATH_PATTERN = /^event(\.[A-Za-z_][A-Za-z0-9_]*)*$/
 const METRIC_CALL_PATTERN = /^(price|margin|spend)\([A-Za-z_][A-Za-z0-9_]*\)$/
@@ -289,7 +301,7 @@ export const completionsAt = (
     if (last === "else") return BEHAVIOR_ITEMS
     if (field === "unit") return typed.length === 1 ? UNIT_ITEMS : []
     if (field === "aggregate") return typed.length === 1 ? AGGREGATE_ITEMS : []
-    if (field === "meter") {
+    if (field === "meter" || field === "outcome") {
       return typed.length === 1 && context.length > 0 ? meters : []
     }
     if (field === "price") {
@@ -305,11 +317,25 @@ export const completionsAt = (
       if (CURRENCY_PATTERN.test(last)) return [keyword("per")]
       return []
     }
+    if (field === "override") {
+      return typed.length === 1 ? [keyword("customer")] : []
+    }
+    if (field === "correlate") {
+      return typed.length === 1 ? [EVENT_ITEM] : []
+    }
     // Filter expressions: path -> operator -> literal -> and/or -> path ...
-    if (field === "filter") {
-      if (last === "filter" || last === "and" || last === "or") return [EVENT_ITEM]
+    // `reverse_on`/`fail_on` share the shape plus `within <n> <time-unit>`.
+    if (field === "filter" || field === "reverse_on" || field === "step" || field === "fail_on") {
+      if (typed.includes("within")) {
+        return NUMBER_PATTERN.test(last) ? TIME_UNIT_ITEMS : []
+      }
+      if (last === field || last === "and" || last === "or") return [EVENT_ITEM]
       if (EVENT_PATH_PATTERN.test(last.replace(/^\(+/, ""))) return OPERATOR_ITEMS
-      if (isLiteral(last.replace(/\)+$/, "")) || /\)$/.test(last)) return LOGICAL_ITEMS
+      if (isLiteral(last.replace(/\)+$/, "")) || /\)$/.test(last)) {
+        return field === "reverse_on" || field === "fail_on"
+          ? [...LOGICAL_ITEMS, keyword("within")]
+          : LOGICAL_ITEMS
+      }
       return []
     }
     // Invariant conditions: metric(subject) -> operator -> threshold -> else.
@@ -327,13 +353,46 @@ export const completionsAt = (
   }
 
   if (context.length === 0) {
-    return [keyword("meter"), keyword("product"), keyword("invariant")]
+    return [
+      keyword("meter"),
+      keyword("product"),
+      keyword("invariant"),
+      keyword("override"),
+      keyword("outcome")
+    ]
   }
   const top = context[0]
   const inner = context[context.length - 1]
 
   if (top === "meter" && context.length === 1) {
-    return [keyword("filter"), keyword("aggregate"), keyword("unit"), ...AGGREGATE_ITEMS]
+    return [
+      keyword("filter"),
+      keyword("aggregate"),
+      keyword("unit"),
+      keyword("reverse_on"),
+      ...AGGREGATE_ITEMS
+    ]
+  }
+  if (top === "outcome" && context.length === 1) {
+    return [keyword("correlate"), keyword("step"), keyword("fail_on")]
+  }
+  if (top === "override") {
+    if (inner === "meter" || inner === "outcome") {
+      return [keyword("per_unit"), keyword("included"), keyword("margin"), keyword("per")]
+    }
+    if (inner === "entitlement") {
+      return [keyword("limit"), keyword("meter"), ...meters]
+    }
+    return [
+      keyword("until"),
+      keyword("price"),
+      keyword("recurring"),
+      ...INTERVAL_ITEMS,
+      keyword("entitlement"),
+      keyword("meter"),
+      keyword("outcome"),
+      ...meters
+    ]
   }
   if (top === "invariant") {
     return [
@@ -347,6 +406,9 @@ export const completionsAt = (
     ]
   }
   if (top === "product") {
+    if (inner === "outcome") {
+      return [keyword("per_unit"), keyword("included"), keyword("per")]
+    }
     if (inner === "meter") {
       return [keyword("per_unit"), keyword("included"), keyword("margin"), keyword("per")]
     }
@@ -360,6 +422,7 @@ export const completionsAt = (
       ...INTERVAL_ITEMS,
       keyword("entitlement"),
       keyword("meter"),
+      keyword("outcome"),
       ...meters
     ]
   }

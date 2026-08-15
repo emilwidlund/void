@@ -97,6 +97,7 @@ it.effect("deploy → ingest → usage flow", () =>
     expect(ingested.json).toEqual({
       ingested: 8,
       matched: { api_calls: 4, compute_seconds: 2 },
+      reversed: {},
       cost_minor: 2.4
     })
 
@@ -187,6 +188,216 @@ it.effect("deploy → ingest → usage flow", () =>
     // Malformed bodies are rejected
     const malformed = yield* post("/v1/events", { events: [] })
     expect(malformed.status).toBe(400)
+  }).pipe(
+    Effect.scoped,
+    Effect.provide(ServicesLive),
+    Effect.provide(NodeHttpServer.layerTest)
+  )
+)
+
+it.effect("reversal events unwind prior charges within the window", () =>
+  Effect.gen(function* () {
+    yield* HttpServer.serveEffect(router)
+    const client = yield* HttpClient.HttpClient
+    const post = (url: string, body: unknown) =>
+      client
+        .execute(HttpClientRequest.post(url).pipe(HttpClientRequest.bodyUnsafeJson(body)))
+        .pipe(
+          Effect.flatMap((r) => Effect.map(r.json, (json) => json)),
+          Effect.scoped
+        )
+    const get = (url: string) =>
+      client.get(url).pipe(
+        Effect.flatMap((r) => Effect.map(r.json, (json) => json)),
+        Effect.scoped
+      )
+
+    const { ir } = yield* compile(`
+      meter tickets {
+        filter event.name == "ticket.closed" and event.resolution == "solved"
+        aggregate count
+        reverse_on event.name == "ticket.reopened" within 7 days
+      }
+      product agent {
+        name "Agent"
+        meter tickets { per_unit 2 USD }
+      }
+    `)
+    yield* post("/v1/deploy", { checksum: checksumIr(ir), ir })
+
+    // Three resolved tickets, one of them long ago (outside the 7-day window)
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const charged = (yield* post("/v1/events", {
+      events: [
+        { name: "ticket.closed", external_customer_id: "acme", timestamp: "2026-08-01T00:00:00Z", properties: { resolution: "solved" } },
+        { name: "ticket.closed", external_customer_id: "acme", timestamp: "2026-08-14T10:00:00Z", properties: { resolution: "solved" } },
+        { name: "ticket.closed", external_customer_id: "acme", timestamp: "2026-08-14T11:00:00Z", properties: { resolution: "solved" } },
+        { name: "ticket.closed", external_customer_id: "acme", timestamp: "2026-08-14T11:30:00Z", properties: { resolution: "unresolved" } }
+      ]
+    })) as any
+    expect(charged.matched).toEqual({ tickets: 3 })
+
+    // A reopen unwinds the most recent in-window charge
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const reversed = (yield* post("/v1/events", {
+      events: [
+        { name: "ticket.reopened", external_customer_id: "acme", timestamp: "2026-08-14T12:00:00Z" }
+      ]
+    })) as any
+    expect(reversed.reversed).toEqual({ tickets: 1 })
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const usage = (yield* get("/v1/usage")) as any
+    expect(usage.usage).toEqual([
+      { meter: "tickets", customer: "acme", aggregation: "count", value: 2 }
+    ])
+
+    // Only the 2026-08-01 charge remains in range history-wise, but it's
+    // outside the reopen window: further reopens can only unwind the one
+    // remaining in-window charge, then stop at the floor.
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const more = (yield* post("/v1/events", {
+      events: [
+        { name: "ticket.reopened", external_customer_id: "acme", timestamp: "2026-08-14T13:00:00Z" },
+        { name: "ticket.reopened", external_customer_id: "acme", timestamp: "2026-08-14T14:00:00Z" }
+      ]
+    })) as any
+    expect(more.reversed).toEqual({ tickets: 1 })
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const after = (yield* get("/v1/usage")) as any
+    expect(after.usage[0].value).toBe(1)
+  }).pipe(
+    Effect.scoped,
+    Effect.provide(ServicesLive),
+    Effect.provide(NodeHttpServer.layerTest)
+  )
+)
+
+it.effect("outcome chains complete in order, correlated per instance", () =>
+  Effect.gen(function* () {
+    yield* HttpServer.serveEffect(router)
+    const client = yield* HttpClient.HttpClient
+    const post = (url: string, body: unknown) =>
+      client
+        .execute(HttpClientRequest.post(url).pipe(HttpClientRequest.bodyUnsafeJson(body)))
+        .pipe(
+          Effect.flatMap((r) => Effect.map(r.json, (json) => json)),
+          Effect.scoped
+        )
+    const get = (url: string) =>
+      client.get(url).pipe(
+        Effect.flatMap((r) => Effect.map(r.json, (json) => json)),
+        Effect.scoped
+      )
+
+    const { ir } = yield* compile(`
+      outcome resolution {
+        correlate event.ticket_id
+        step event.name == "ticket.opened"
+        step event.name == "ticket.closed" and event.resolution == "solved"
+        fail_on event.name == "ticket.reopened" within 7 days
+      }
+      product agent {
+        name "Agent"
+        outcome resolution { per_unit 2 USD }
+      }
+    `)
+    yield* post("/v1/deploy", { checksum: checksumIr(ir), ir })
+
+    const at = (h: number) => `2026-08-14T${String(h).padStart(2, "0")}:00:00Z`
+    // Two interleaved tickets; a close without a prior open does nothing;
+    // an unresolved close does not complete the chain.
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const first = (yield* post("/v1/events", {
+      events: [
+        { name: "ticket.opened", external_customer_id: "acme", timestamp: at(1), properties: { ticket_id: "A" } },
+        { name: "ticket.opened", external_customer_id: "acme", timestamp: at(2), properties: { ticket_id: "B" } },
+        { name: "ticket.closed", external_customer_id: "acme", timestamp: at(3), properties: { ticket_id: "C", resolution: "solved" } },
+        { name: "ticket.closed", external_customer_id: "acme", timestamp: at(4), properties: { ticket_id: "A", resolution: "solved" } },
+        { name: "ticket.closed", external_customer_id: "acme", timestamp: at(5), properties: { ticket_id: "B", resolution: "unresolved" } }
+      ]
+    })) as any
+    // only ticket A completed the full chain
+    expect(first.matched).toEqual({ resolution: 1 })
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const usage = (yield* get("/v1/usage")) as any
+    expect(usage.usage).toEqual([
+      { meter: "resolution", customer: "acme", aggregation: "count", value: 1 }
+    ])
+
+    // Reopening B (never completed) reverses nothing; reopening A reverses A.
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const reopen = (yield* post("/v1/events", {
+      events: [
+        { name: "ticket.reopened", external_customer_id: "acme", timestamp: at(6), properties: { ticket_id: "B" } },
+        { name: "ticket.reopened", external_customer_id: "acme", timestamp: at(7), properties: { ticket_id: "A" } }
+      ]
+    })) as any
+    expect(reopen.reversed).toEqual({ resolution: 1 })
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const after = (yield* get("/v1/usage")) as any
+    expect(after.usage[0].value).toBe(0)
+  }).pipe(
+    Effect.scoped,
+    Effect.provide(ServicesLive),
+    Effect.provide(NodeHttpServer.layerTest)
+  )
+)
+
+it.effect("customer overrides replace prices and entitlements", () =>
+  Effect.gen(function* () {
+    yield* HttpServer.serveEffect(router)
+    const client = yield* HttpClient.HttpClient
+    const post = (url: string, body: unknown) =>
+      client
+        .execute(HttpClientRequest.post(url).pipe(HttpClientRequest.bodyUnsafeJson(body)))
+        .pipe(Effect.scoped)
+    const get = (url: string) =>
+      client.get(url).pipe(
+        Effect.flatMap((r) => Effect.map(r.json, (json) => json)),
+        Effect.scoped
+      )
+
+    const { ir } = yield* compile(`
+      meter api_calls { aggregate count }
+      product pro {
+        name "Pro"
+        price recurring monthly 29 USD
+        meter api_calls { per_unit 10 USD_CENTS }
+        entitlement seats { limit 5 }
+      }
+      invariant "hard stop" { spend(customer) <= 30 USD else block }
+      override customer "acme" {
+        meter api_calls { per_unit 1 USD_CENTS }
+        entitlement seats { limit 20 }
+        entitlement sso
+      }
+    `)
+    yield* post("/v1/deploy", { checksum: checksumIr(ir), ir })
+
+    const calls = Array.from({ length: 20 }, () => ({ name: "api.request" }))
+    yield* post("/v1/events", {
+      events: calls.map((c) => ({ ...c, external_customer_id: "acme" }))
+    })
+    yield* post("/v1/events", {
+      events: calls.map((c) => ({ ...c, external_customer_id: "globex" }))
+    })
+
+    // globex pays list price: 2900 + 20*10 = 3100 > 3000 -> blocked.
+    // acme's override prices calls at 1¢: 2900 + 20 = 2920 -> ok.
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const globex = (yield* get("/v1/entitlements/globex")) as any
+    expect(globex.enforcement).toBe("blocked")
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const acme = (yield* get("/v1/entitlements/acme")) as any
+    expect(acme.enforcement).toBe("ok")
+    // override entitlements replace and extend the product's
+    expect(acme.entitlements).toEqual([
+      { id: "seats", product: "override", type: "limit", limit: 20 },
+      { id: "sso", product: "override", type: "flag" }
+    ])
+    expect(globex.entitlements).toEqual([
+      { id: "seats", product: "pro", type: "limit", limit: 5 }
+    ])
   }).pipe(
     Effect.scoped,
     Effect.provide(ServicesLive),

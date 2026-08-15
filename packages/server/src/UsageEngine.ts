@@ -3,8 +3,14 @@ import type { ActiveDescription } from "./ConfigStore.js"
 import { ConfigStore, describeActive } from "./ConfigStore.js"
 import type { IngestEvent } from "./Domain.js"
 import type { AggregationState } from "./Metering.js"
-import { applyEvent, finalize, initialState, matchesFilter } from "./Metering.js"
-import { violatedSpendInvariants } from "./Spend.js"
+import {
+  applyEvent,
+  finalize,
+  initialState,
+  matchesFilter,
+  resolveProperty
+} from "./Metering.js"
+import { activeOverride, violatedSpendInvariants } from "./Spend.js"
 
 export class NoActiveConfig extends Data.TaggedError("NoActiveConfig")<{}> {}
 
@@ -18,6 +24,8 @@ export interface UsageRow {
 export interface IngestSummary {
   readonly ingested: number
   readonly matched: Readonly<Record<string, number>>
+  /** reversal events applied per meter (a matching prior charge was unwound) */
+  readonly reversed: Readonly<Record<string, number>>
   /** total `_cost` accrued by this batch, in minor units */
   readonly cost_minor: number
 }
@@ -97,10 +105,44 @@ export interface Snapshot {
 /** meter id -> customer id -> aggregation state */
 type UsageState = ReadonlyMap<string, ReadonlyMap<string, AggregationState>>
 
+/** One charge on a reversible meter, kept so a correction can unwind it. */
+interface ChargeRecord {
+  readonly t: number
+  readonly v: number
+}
+
+/** Per-customer cap on retained charge records for reversible meters. */
+const RECORD_LIMIT = 10_000
+
+/** meter id -> { aggregation label, customer id -> charge records } */
+type ReversibleState = ReadonlyMap<
+  string,
+  {
+    readonly aggregation: string
+    readonly byCustomer: ReadonlyMap<string, ReadonlyArray<ChargeRecord>>
+  }
+>
+
+/** One correlated outcome chain in flight (or finished). */
+interface OutcomeInstance {
+  /** index of the next step to match */
+  next: number
+  completedAt: number | null
+  failed: boolean
+}
+
+/** outcome id -> customer id -> correlation key -> instance */
+type OutcomeState = ReadonlyMap<
+  string,
+  ReadonlyMap<string, ReadonlyMap<string, OutcomeInstance>>
+>
+
 export class UsageEngine extends Effect.Service<UsageEngine>()("UsageEngine", {
   effect: Effect.gen(function* () {
     const configs = yield* ConfigStore
     const state = yield* Ref.make<UsageState>(new Map())
+    const reversibleState = yield* Ref.make<ReversibleState>(new Map())
+    const outcomeState = yield* Ref.make<OutcomeState>(new Map())
     /** customer id -> "<event>\u0000<currency>" -> accumulated cost in minor units */
     const costState = yield* Ref.make<ReadonlyMap<string, ReadonlyMap<string, number>>>(
       new Map()
@@ -121,6 +163,7 @@ export class UsageEngine extends Effect.Service<UsageEngine>()("UsageEngine", {
           return yield* new NoActiveConfig()
         }
         const matched: Record<string, number> = {}
+        const reversed: Record<string, number> = {}
         let batchCostMinor = 0
         yield* Ref.update(costState, (current) => {
           const next = new Map<string, Map<string, number>>()
@@ -166,6 +209,7 @@ export class UsageEngine extends Effect.Service<UsageEngine>()("UsageEngine", {
           }
           for (const event of events) {
             for (const meter of active.ir.meters) {
+              if (meter.reverse !== null) continue // handled as charge records
               if (!matchesFilter(meter.filter, event)) continue
               matched[meter.id] = (matched[meter.id] ?? 0) + 1
               const customer = event.external_customer_id ?? "anonymous"
@@ -177,16 +221,155 @@ export class UsageEngine extends Effect.Service<UsageEngine>()("UsageEngine", {
           }
           return next
         })
+        // Reversible meters keep individual charge records so a correction
+        // event can unwind one prior charge (LIFO, within the window, never
+        // below zero).
+        yield* Ref.update(reversibleState, (current) => {
+          const next = new Map<
+            string,
+            { aggregation: string; byCustomer: Map<string, Array<ChargeRecord>> }
+          >()
+          for (const [meterId, entry] of current) {
+            next.set(meterId, {
+              aggregation: entry.aggregation,
+              byCustomer: new Map(
+                [...entry.byCustomer].map(([customer, records]) => [customer, [...records]])
+              )
+            })
+          }
+          for (const event of events) {
+            const eventTime = (() => {
+              const parsed = event.timestamp !== undefined ? Date.parse(event.timestamp) : NaN
+              return Number.isNaN(parsed) ? Date.now() : parsed
+            })()
+            for (const meter of active.ir.meters) {
+              if (meter.reverse === null) continue
+              const customer = event.external_customer_id ?? "anonymous"
+              const entry = next.get(meter.id) ?? {
+                aggregation: meter.aggregation.type,
+                byCustomer: new Map<string, Array<ChargeRecord>>()
+              }
+              next.set(meter.id, entry)
+              const records = entry.byCustomer.get(customer) ?? []
+              entry.byCustomer.set(customer, records)
+
+              if (matchesFilter(meter.filter, event)) {
+                const value =
+                  meter.aggregation.type === "count"
+                    ? 1
+                    : resolveProperty(meter.aggregation.property, event)
+                if (typeof value !== "number") continue
+                matched[meter.id] = (matched[meter.id] ?? 0) + 1
+                records.push({ t: eventTime, v: value })
+                if (records.length > RECORD_LIMIT) records.shift()
+                continue
+              }
+              if (matchesFilter(meter.reverse.filter, event)) {
+                const cutoff =
+                  meter.reverse.window_s !== null
+                    ? eventTime - meter.reverse.window_s * 1000
+                    : Number.NEGATIVE_INFINITY
+                for (let i = records.length - 1; i >= 0; i -= 1) {
+                  if (records[i]!.t >= cutoff) {
+                    records.splice(i, 1)
+                    reversed[meter.id] = (reversed[meter.id] ?? 0) + 1
+                    break
+                  }
+                }
+              }
+            }
+          }
+          return next
+        })
+        // Outcome chains: correlated instances advance step by step; the
+        // final step completes (bills) one scalar unit; fail_on aborts an
+        // in-flight chain or reverses a completed one within its window.
+        yield* Ref.update(outcomeState, (current) => {
+          const next = new Map<string, Map<string, Map<string, OutcomeInstance>>>()
+          for (const [outcomeId, byCustomer] of current) {
+            next.set(
+              outcomeId,
+              new Map(
+                [...byCustomer].map(([customer, instances]) => [
+                  customer,
+                  new Map([...instances].map(([key, i]) => [key, { ...i }]))
+                ])
+              )
+            )
+          }
+          for (const event of events) {
+            const parsed = event.timestamp !== undefined ? Date.parse(event.timestamp) : NaN
+            const eventTime = Number.isNaN(parsed) ? Date.now() : parsed
+            const customer = event.external_customer_id ?? "anonymous"
+            for (const outcome of active.ir.outcomes) {
+              const keyValue = resolveProperty(outcome.correlate, event)
+              if (keyValue === undefined) continue
+              const key = String(keyValue)
+              const byCustomer =
+                next.get(outcome.id) ?? new Map<string, Map<string, OutcomeInstance>>()
+              next.set(outcome.id, byCustomer)
+              const instances = byCustomer.get(customer) ?? new Map<string, OutcomeInstance>()
+              byCustomer.set(customer, instances)
+              const instance = instances.get(key)
+
+              if (outcome.fail !== null && matchesFilter(outcome.fail.filter, event)) {
+                if (instance === undefined || instance.failed) continue
+                if (instance.completedAt === null) {
+                  instance.failed = true // chain aborted before completion
+                } else {
+                  const inWindow =
+                    outcome.fail.window_s === null ||
+                    eventTime - instance.completedAt <= outcome.fail.window_s * 1000
+                  if (inWindow) {
+                    instance.failed = true
+                    reversed[outcome.id] = (reversed[outcome.id] ?? 0) + 1
+                  }
+                }
+                continue
+              }
+
+              if (instance === undefined) {
+                const first = outcome.steps[0]
+                if (first === undefined || !matchesFilter(first, event)) continue
+                if (instances.size >= RECORD_LIMIT) continue
+                const fresh: OutcomeInstance = {
+                  next: 1,
+                  completedAt: outcome.steps.length === 1 ? eventTime : null,
+                  failed: false
+                }
+                instances.set(key, fresh)
+                if (fresh.completedAt !== null) {
+                  matched[outcome.id] = (matched[outcome.id] ?? 0) + 1
+                }
+                continue
+              }
+              if (instance.failed || instance.completedAt !== null) continue
+              const step = outcome.steps[instance.next]
+              if (step === undefined || !matchesFilter(step, event)) continue
+              instance.next += 1
+              if (instance.next === outcome.steps.length) {
+                instance.completedAt = eventTime
+                matched[outcome.id] = (matched[outcome.id] ?? 0) + 1
+              }
+            }
+          }
+          return next
+        })
         yield* notify
         return {
           ingested: events.length,
           matched,
+          reversed,
           cost_minor: Math.round(batchCostMinor * 1e6) / 1e6
         }
       })
 
-    const usage: Effect.Effect<ReadonlyArray<UsageRow>> = Ref.get(state).pipe(
-      Effect.map((current) => {
+    const usage: Effect.Effect<ReadonlyArray<UsageRow>> = Effect.all([
+      Ref.get(state),
+      Ref.get(reversibleState),
+      Ref.get(outcomeState)
+    ]).pipe(
+      Effect.map(([current, reversible, outcomes]) => {
         const rows: Array<UsageRow> = []
         for (const [meter, byCustomer] of current) {
           for (const [customer, aggregationState] of byCustomer) {
@@ -195,6 +378,30 @@ export class UsageEngine extends Effect.Service<UsageEngine>()("UsageEngine", {
               customer,
               aggregation: aggregationState.type,
               value: finalize(aggregationState)
+            })
+          }
+        }
+        for (const [meter, entry] of reversible) {
+          for (const [customer, records] of entry.byCustomer) {
+            rows.push({
+              meter,
+              customer,
+              aggregation: entry.aggregation,
+              value: records.reduce((sum, record) => sum + record.v, 0)
+            })
+          }
+        }
+        for (const [outcomeId, byCustomer] of outcomes) {
+          for (const [customer, instances] of byCustomer) {
+            let completed = 0
+            for (const instance of instances.values()) {
+              if (instance.completedAt !== null && !instance.failed) completed += 1
+            }
+            rows.push({
+              meter: outcomeId,
+              customer,
+              aggregation: "count",
+              value: completed
             })
           }
         }
@@ -307,34 +514,50 @@ export class UsageEngine extends Effect.Service<UsageEngine>()("UsageEngine", {
               used.has(price.meter)
           )
         )
-        const statuses = products.flatMap((product) =>
-          product.entitlements.map((entitlement): EntitlementStatus => {
-            switch (entitlement.type) {
-              case "flag":
-                return { id: entitlement.id, product: product.id, type: "flag" }
-              case "limit":
-                return {
-                  id: entitlement.id,
-                  product: product.id,
-                  type: "limit",
-                  limit: entitlement.limit
-                }
-              case "metered": {
-                const consumed = used.get(entitlement.meter) ?? 0
-                return {
-                  id: entitlement.id,
-                  product: product.id,
-                  type: "metered",
-                  meter: entitlement.meter,
-                  limit: entitlement.limit,
-                  used: consumed,
-                  remaining: Math.max(0, entitlement.limit - consumed),
-                  exceeded: consumed > entitlement.limit
-                }
+        const toStatus = (
+          entitlement: (typeof active.ir.products)[number]["entitlements"][number],
+          owner: string
+        ): EntitlementStatus => {
+          switch (entitlement.type) {
+            case "flag":
+              return { id: entitlement.id, product: owner, type: "flag" }
+            case "limit":
+              return {
+                id: entitlement.id,
+                product: owner,
+                type: "limit",
+                limit: entitlement.limit
+              }
+            case "metered": {
+              const consumed = used.get(entitlement.meter) ?? 0
+              return {
+                id: entitlement.id,
+                product: owner,
+                type: "metered",
+                meter: entitlement.meter,
+                limit: entitlement.limit,
+                used: consumed,
+                remaining: Math.max(0, entitlement.limit - consumed),
+                exceeded: consumed > entitlement.limit
               }
             }
-          })
+          }
+        }
+
+        const statuses = products.flatMap((product) =>
+          product.entitlements.map((entitlement) => toStatus(entitlement, product.id))
         )
+        // A customer override's entitlements replace same-id grants and can
+        // add new ones on top of whatever the products grant.
+        const override = activeOverride(active.ir, customer, new Date())
+        if (override !== undefined) {
+          for (const entitlement of override.entitlements) {
+            const status = toStatus(entitlement, "override")
+            const existing = statuses.findIndex((s) => s.id === entitlement.id)
+            if (existing >= 0) statuses[existing] = status
+            else statuses.push(status)
+          }
+        }
         const meterCostRows = yield* meterCosts
         const violations = violatedSpendInvariants(
           customer,

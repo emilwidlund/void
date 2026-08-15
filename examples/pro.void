@@ -24,7 +24,7 @@ invariant "no unprofitable customers" { margin(customer) >= 20% else notify }
 meter api_calls {
   filter event.name == "api.request"
   aggregate count
-  unit requests
+  unit scalar
 }
 
 meter compute_seconds {
@@ -33,30 +33,40 @@ meter compute_seconds {
   unit minutes
 }
 
-product awesome {
-  name "Wow"
-  price recurring weekly 20 GBP_CENTS
-  
-  entitlement seats {
-    limit 5
-  }
+# Success-based billing as a correlated chain: one instance per ticket_id,
+# steps must happen in order, and completing the chain bills one unit. A
+# reopen aborts an in-flight chain — or reverses a completed one within
+# 7 days, unwinding exactly that ticket's charge.
+outcome ticket_resolution {
+  correlate event.ticket_id
+  step event.name == "ticket.opened"
+  step event.name == "ticket.closed" and event.resolution == "solved"
+  fail_on event.name == "ticket.reopened" within 7 days
 }
 
 product pro {
   name "Pro Plan"
   price recurring monthly 29 USD
 
-  entitlement sso
-  entitlement seats { limit 5 }
-  entitlement api_quota {
-    meter api_calls
-    limit 100_000
-  }
-
   meter api_calls {
     per_unit 10 USD_CENTS
     included 10_000
   }
 
-  meter compute_seconds { margin 60% }
+  outcome ticket_resolution { 
+    per_unit 2 USD
+  }
+}
+
+# A negotiated deal as config: these prices and entitlements replace the
+# list versions for acme until the contract lapses. The compiler holds
+# overrides to the same invariants — a deal below the API price floor
+# would fail the build.
+override customer "acme" {
+  until "2027-01-01"
+  meter api_calls {
+    per_unit 8 USD_CENTS
+    included 50_000
+  }
+  entitlement seats { limit 20 }
 }

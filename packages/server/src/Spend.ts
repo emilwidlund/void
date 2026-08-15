@@ -1,5 +1,17 @@
-import type { BillingIr, IrInvariant } from "@void/compiler"
+import type { BillingIr, IrInvariant, IrOverride, IrPrice } from "@void/compiler"
 import type { MeterCostRow, UsageRow } from "./UsageEngine.js"
+
+/** The customer's override, if one exists and hasn't expired. */
+export const activeOverride = (
+  ir: BillingIr,
+  customer: string,
+  now: Date
+): IrOverride | undefined =>
+  ir.overrides.find(
+    (override) =>
+      override.customer === customer &&
+      (override.until === null || now.getTime() < Date.parse(override.until))
+  )
 
 /**
  * Server-side accrued spend for one customer, mirroring the dashboard's
@@ -21,15 +33,30 @@ export const accruedSpendMinor = (
   customer: string,
   ir: BillingIr,
   usage: ReadonlyArray<UsageRow>,
-  meterCosts: ReadonlyArray<MeterCostRow>
+  meterCosts: ReadonlyArray<MeterCostRow>,
+  now: Date = new Date()
 ): number => {
   const rows = usage.filter((row) => row.customer === customer)
+  const override = activeOverride(ir, customer, now)
+  const overrideByMeter = new Map<string, IrPrice>(
+    (override?.prices ?? []).flatMap((price) =>
+      price.type === "recurring" ? [] : [[price.meter, price] as const]
+    )
+  )
+  const overrideRecurring = (override?.prices ?? []).filter(
+    (price) => price.type === "recurring"
+  )
   let base = 0
   let metered = 0
+  let anyAttributed = false
 
   for (const product of ir.products) {
     let attributed = false
-    for (const price of product.prices) {
+    for (const listed of product.prices) {
+      const price =
+        listed.type === "recurring"
+          ? listed
+          : (overrideByMeter.get(listed.meter) ?? listed)
       if (price.type === "metered") {
         const row = rows.find((r) => r.meter === price.meter)
         if (row === undefined) continue
@@ -48,10 +75,20 @@ export const accruedSpendMinor = (
       }
     }
     if (attributed) {
-      for (const price of product.prices) {
-        if (price.type !== "recurring") continue
-        base += Number(price.amount.amount) * (INTERVAL_TO_30D[price.interval] ?? 1)
+      anyAttributed = true
+      if (overrideRecurring.length === 0) {
+        for (const price of product.prices) {
+          if (price.type !== "recurring") continue
+          base += Number(price.amount.amount) * (INTERVAL_TO_30D[price.interval] ?? 1)
+        }
       }
+    }
+  }
+  // A negotiated recurring price replaces the list base fees outright.
+  if (anyAttributed && overrideRecurring.length > 0) {
+    for (const price of overrideRecurring) {
+      if (price.type !== "recurring") continue
+      base += Number(price.amount.amount) * (INTERVAL_TO_30D[price.interval] ?? 1)
     }
   }
 

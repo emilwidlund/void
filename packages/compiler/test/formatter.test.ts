@@ -111,7 +111,7 @@ invariant "compute stays profitable" {
 meter api_calls {
   filter event.name == "api.request" or event.name == "api.retry"
   aggregate count
-  unit requests
+  unit scalar
 }
 
 meter compute_seconds {
@@ -129,7 +129,7 @@ product pro {
     limit 100_000
   }
   meter api_calls {
-    per_unit 10 USD_CENTS per request
+    per_unit 10 USD_CENTS per scalar
     included 10_000
   }
   meter compute_seconds { margin 60% }

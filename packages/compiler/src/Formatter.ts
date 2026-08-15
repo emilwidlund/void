@@ -8,6 +8,7 @@ import type {
   Literal,
   MeterField,
   Money,
+  OutcomeField,
   PricingField,
   ProductField,
   SourceFile
@@ -202,6 +203,13 @@ const meterFieldItem = (field: MeterField): Item => {
       return line(field.span, () => `aggregate ${formatAggregate(field.aggregate)}`)
     case "UnitField":
       return line(field.span, () => `unit ${field.name.name}`)
+    case "ReverseField": {
+      const window =
+        field.window !== null
+          ? ` within ${formatNumber(field.window.value)} ${field.window.unit.name}`
+          : ""
+      return line(field.span, () => `reverse_on ${formatFilter(field.expr)}${window}`)
+    }
   }
 }
 
@@ -241,7 +249,7 @@ const productFieldItem = (field: ProductField): Item => {
         span: field.span,
         print: (indent, pool, out) =>
           emitBlock(
-            `meter ${field.meter.name}`,
+            `${field.kind} ${field.meter.name}`,
             field.fields.map(pricingFieldItem),
             field.span,
             indent,
@@ -267,6 +275,22 @@ const productFieldItem = (field: ProductField): Item => {
           )
         }
       }
+  }
+}
+
+const outcomeFieldItem = (field: OutcomeField): Item => {
+  switch (field._tag) {
+    case "CorrelateField":
+      return line(field.span, () => `correlate ${field.path.segments.join(".")}`)
+    case "StepField":
+      return line(field.span, () => `step ${formatFilter(field.expr)}`)
+    case "FailField": {
+      const window =
+        field.window !== null
+          ? ` within ${formatNumber(field.window.value)} ${field.window.unit.name}`
+          : ""
+      return line(field.span, () => `fail_on ${formatFilter(field.expr)}${window}`)
+    }
   }
 }
 
@@ -313,6 +337,39 @@ const declItem = (decl: Decl): Item => {
             out
           )
       }
+    case "OutcomeDecl":
+      return {
+        span: decl.span,
+        print: (indent, pool, out) =>
+          emitBlock(
+            `outcome ${decl.id.name}`,
+            decl.fields.map(outcomeFieldItem),
+            decl.span,
+            indent,
+            pool,
+            out
+          )
+      }
+    case "OverrideDecl": {
+      const items: Array<Item> = decl.fields.map(productFieldItem)
+      if (decl.until !== null) {
+        const until = decl.until
+        items.push(line(until.span, () => `until ${formatString(until.value)}`))
+      }
+      items.sort((a, b) => a.span.start.offset - b.span.start.offset)
+      return {
+        span: decl.span,
+        print: (indent, pool, out) =>
+          emitBlock(
+            `override customer ${formatString(decl.customer)}`,
+            items,
+            decl.span,
+            indent,
+            pool,
+            out
+          )
+      }
+    }
   }
 }
 

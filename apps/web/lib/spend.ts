@@ -1,5 +1,17 @@
-import type { BillingIr } from "@void/compiler"
+import type { BillingIr, IrOverride, IrPrice } from "@void/compiler"
 import type { CostRow, MeterCostRow, UsageRow } from "./types"
+
+/** The customer's override, if one exists and hasn't expired. */
+export const activeOverride = (
+  ir: BillingIr,
+  customer: string,
+  now: Date
+): IrOverride | undefined =>
+  ir.overrides.find(
+    (override) =>
+      override.customer === customer &&
+      (override.until === null || now.getTime() < Date.parse(override.until))
+  )
 
 export const PERIOD_DAYS = 30
 const MS_PER_DAY = 86_400_000
@@ -136,8 +148,21 @@ export const computeSpend = (
     const lines: Array<MeterSpendLine> = []
     const attributed = new Map<string, (typeof ir.products)[number]>()
 
+    // Negotiated deal: override prices shadow the product's for this customer.
+    const override = activeOverride(ir, customer, now)
+    const overrideByMeter = new Map<string, IrPrice>(
+      (override?.prices ?? []).flatMap((price) =>
+        price.type === "recurring" ? [] : [[price.meter, price] as const]
+      )
+    )
+    const overrideRecurring = (override?.prices ?? []).filter(
+      (price) => price.type === "recurring"
+    )
+
     for (const product of ir.products) {
-      for (const price of product.prices) {
+      for (const listed of product.prices) {
+        if (listed.type === "recurring") continue
+        const price = overrideByMeter.get(listed.meter) ?? listed
         if (price.type === "recurring") continue
         const row = rows.find((r) => r.meter === price.meter)
         if (price.type === "metered") {
@@ -192,11 +217,20 @@ export const computeSpend = (
     }
 
     let baseMinor = 0
-    for (const product of attributed.values()) {
-      for (const price of product.prices) {
+    if (attributed.size > 0 && overrideRecurring.length > 0) {
+      // A negotiated recurring price replaces the list base fees outright.
+      for (const price of overrideRecurring) {
         if (price.type !== "recurring") continue
         currency = price.amount.currency
         baseMinor += Number(price.amount.amount) * (INTERVAL_TO_30D[price.interval] ?? 1)
+      }
+    } else {
+      for (const product of attributed.values()) {
+        for (const price of product.prices) {
+          if (price.type !== "recurring") continue
+          currency = price.amount.currency
+          baseMinor += Number(price.amount.amount) * (INTERVAL_TO_30D[price.interval] ?? 1)
+        }
       }
     }
 

@@ -11,6 +11,8 @@ import type {
   Literal,
   MeterField,
   Money,
+  OutcomeField,
+  OverrideDecl,
   PricingField,
   ProductField,
   PropertyPath,
@@ -92,9 +94,13 @@ class Parser {
         decls.push(this.parseProduct())
       } else if (keyword === "invariant") {
         decls.push(this.parseInvariant())
+      } else if (keyword === "override") {
+        decls.push(this.parseOverride())
+      } else if (keyword === "outcome") {
+        decls.push(this.parseOutcome())
       } else {
         this.fail(
-          `expected \`meter\`, \`product\` or \`invariant\` declaration, found ${this.describe(this.peek())}`
+          `expected \`meter\`, \`product\`, \`invariant\`, \`override\` or \`outcome\` declaration, found ${this.describe(this.peek())}`
         )
       }
     }
@@ -147,8 +153,31 @@ class Parser {
         span: { start: start.span.start, end: name.span.end }
       }
     }
+    if (keyword === "reverse_on") {
+      const start = this.advance()
+      const expr = this.parseFilterExpr()
+      let window: Extract<MeterField, { _tag: "ReverseField" }>["window"] = null
+      let end = expr.span.end
+      if (this.peekKeyword() === "within") {
+        const withinStart = this.advance()
+        const value = this.expect("Number", "time span amount")
+        const unit = this.expectIdent("time unit (days, hours, ...)")
+        window = {
+          value: value.value,
+          unit,
+          span: { start: withinStart.span.start, end: unit.span.end }
+        }
+        end = unit.span.end
+      }
+      return {
+        _tag: "ReverseField",
+        expr,
+        window,
+        span: { start: start.span.start, end }
+      }
+    }
     return this.fail(
-      `expected \`filter\`, \`aggregate\` or \`unit\`, found ${this.describe(this.peek())}`
+      `expected \`filter\`, \`aggregate\`, \`unit\` or \`reverse_on\`, found ${this.describe(this.peek())}`
     )
   }
 
@@ -297,9 +326,9 @@ class Parser {
       const start = this.advance()
       return this.parseRecurringPrice(start)
     }
-    if (keyword === "meter") {
+    if (keyword === "meter" || keyword === "outcome") {
       const start = this.advance()
-      return this.parseMeterBinding(start)
+      return this.parseMeterBinding(start, keyword)
     }
     if (keyword === "entitlement") {
       const start = this.advance()
@@ -336,8 +365,8 @@ class Parser {
     }
   }
 
-  private parseMeterBinding(start: Token): ProductField {
-    const meter = this.expectIdent("meter name")
+  private parseMeterBinding(start: Token, kind: "meter" | "outcome"): ProductField {
+    const meter = this.expectIdent(`${kind} name`)
     this.expect("LBrace", "`{`")
     const fields: Array<PricingField> = []
     while (this.peek().kind !== "RBrace" && this.peek().kind !== "EOF") {
@@ -346,6 +375,7 @@ class Parser {
     const end = this.expect("RBrace", "`}`")
     return {
       _tag: "MeterBindingField",
+      kind,
       meter,
       fields,
       span: { start: start.span.start, end: end.span.end }
@@ -393,6 +423,106 @@ class Parser {
     return this.fail(
       `expected \`per_unit\`, \`included\` or \`margin\`, found ${this.describe(this.peek())}`
     )
+  }
+
+  // outcome := "outcome" ident "{" (correlate | step | fail_on)+ "}"
+  private parseOutcome(): Decl {
+    const start = this.expectKeyword("outcome")
+    const id = this.expectIdent("outcome name")
+    this.expect("LBrace", "`{`")
+    const fields: Array<OutcomeField> = []
+    while (this.peek().kind !== "RBrace" && this.peek().kind !== "EOF") {
+      fields.push(this.parseOutcomeField())
+    }
+    const end = this.expect("RBrace", "`}`")
+    return {
+      _tag: "OutcomeDecl",
+      id,
+      fields,
+      span: { start: start.span.start, end: end.span.end }
+    }
+  }
+
+  private parseOutcomeField(): OutcomeField {
+    const keyword = this.peekKeyword()
+    if (keyword === "correlate") {
+      const start = this.advance()
+      const path = this.parsePropertyPath()
+      return {
+        _tag: "CorrelateField",
+        path,
+        span: { start: start.span.start, end: path.span.end }
+      }
+    }
+    if (keyword === "step") {
+      const start = this.advance()
+      const expr = this.parseFilterExpr()
+      return {
+        _tag: "StepField",
+        expr,
+        span: { start: start.span.start, end: expr.span.end }
+      }
+    }
+    if (keyword === "fail_on") {
+      const start = this.advance()
+      const expr = this.parseFilterExpr()
+      let window: Extract<OutcomeField, { _tag: "FailField" }>["window"] = null
+      let end = expr.span.end
+      if (this.peekKeyword() === "within") {
+        const withinStart = this.advance()
+        const value = this.expect("Number", "time span amount")
+        const unit = this.expectIdent("time unit (days, hours, ...)")
+        window = {
+          value: value.value,
+          unit,
+          span: { start: withinStart.span.start, end: unit.span.end }
+        }
+        end = unit.span.end
+      }
+      return {
+        _tag: "FailField",
+        expr,
+        window,
+        span: { start: start.span.start, end }
+      }
+    }
+    return this.fail(
+      `expected \`correlate\`, \`step\` or \`fail_on\`, found ${this.describe(this.peek())}`
+    )
+  }
+
+  // override := "override" "customer" string "{" ("until" string | product-field)* "}"
+  private parseOverride(): Decl {
+    const start = this.expectKeyword("override")
+    this.expectKeyword("customer")
+    const customer = this.expect("String", "customer id string")
+    this.expect("LBrace", "`{`")
+    let until: OverrideDecl["until"] = null
+    const fields: Array<ProductField> = []
+    while (this.peek().kind !== "RBrace" && this.peek().kind !== "EOF") {
+      if (this.peekKeyword() === "until") {
+        const untilStart = this.advance()
+        if (until !== null) {
+          this.fail("duplicate `until` field", untilStart.span)
+        }
+        const date = this.expect("String", "ISO date string like \"2027-01-01\"")
+        until = {
+          value: date.value,
+          span: { start: untilStart.span.start, end: date.span.end }
+        }
+        continue
+      }
+      fields.push(this.parseProductField())
+    }
+    const end = this.expect("RBrace", "`}`")
+    return {
+      _tag: "OverrideDecl",
+      customer: customer.value,
+      customerSpan: customer.span,
+      until,
+      fields,
+      span: { start: start.span.start, end: end.span.end }
+    }
   }
 
   // invariant := "invariant" string "{" condition+ "}"

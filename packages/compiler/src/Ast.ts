@@ -46,6 +46,17 @@ export type MeterField =
   | { readonly _tag: "FilterField"; readonly expr: FilterExpr; readonly span: Span }
   | { readonly _tag: "AggregateField"; readonly aggregate: Aggregate; readonly span: Span }
   | { readonly _tag: "UnitField"; readonly name: Identifier; readonly span: Span }
+  /** `reverse_on <filter> [within <n> <time-unit>]` — events that unbill a prior charge */
+  | {
+      readonly _tag: "ReverseField"
+      readonly expr: FilterExpr
+      readonly window: {
+        readonly value: string
+        readonly unit: Identifier
+        readonly span: Span
+      } | null
+      readonly span: Span
+    }
 
 export interface MeterDecl {
   readonly _tag: "MeterDecl"
@@ -89,6 +100,8 @@ export type ProductField =
     }
   | {
       readonly _tag: "MeterBindingField"
+      /** which namespace the binding references: `meter x { ... }` or `outcome x { ... }` */
+      readonly kind: "meter" | "outcome"
       readonly meter: Identifier
       readonly fields: ReadonlyArray<PricingField>
       readonly span: Span
@@ -132,7 +145,51 @@ export interface InvariantDecl {
   readonly span: Span
 }
 
-export type Decl = MeterDecl | ProductDecl | InvariantDecl
+/**
+ * `override customer "acme" { ... }` — a negotiated deal as config: prices
+ * and entitlements that replace the list versions for one customer, with an
+ * optional expiry.
+ */
+export interface OverrideDecl {
+  readonly _tag: "OverrideDecl"
+  readonly customer: string
+  readonly customerSpan: Span
+  /** ISO date string, e.g. "2027-01-01" */
+  readonly until: { readonly value: string; readonly span: Span } | null
+  readonly fields: ReadonlyArray<ProductField>
+  readonly span: Span
+}
+
+export type OutcomeField =
+  /** which event property identifies one instance of this outcome */
+  | { readonly _tag: "CorrelateField"; readonly path: PropertyPath; readonly span: Span }
+  /** one link in the chain — steps must occur in declaration order */
+  | { readonly _tag: "StepField"; readonly expr: FilterExpr; readonly span: Span }
+  /** aborts an in-flight chain, or reverses a completed one within the window */
+  | {
+      readonly _tag: "FailField"
+      readonly expr: FilterExpr
+      readonly window: {
+        readonly value: string
+        readonly unit: Identifier
+        readonly span: Span
+      } | null
+      readonly span: Span
+    }
+
+/**
+ * `outcome <id> { ... }` — success as a correlated chain of events. A
+ * completed chain counts one scalar unit of usage under the outcome's id,
+ * so outcomes are priced and gated exactly like meters.
+ */
+export interface OutcomeDecl {
+  readonly _tag: "OutcomeDecl"
+  readonly id: Identifier
+  readonly fields: ReadonlyArray<OutcomeField>
+  readonly span: Span
+}
+
+export type Decl = MeterDecl | ProductDecl | InvariantDecl | OverrideDecl | OutcomeDecl
 
 export interface SourceFile {
   readonly decls: ReadonlyArray<Decl>

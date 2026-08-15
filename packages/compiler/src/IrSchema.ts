@@ -41,7 +41,25 @@ export const IrMeterSchema = Schema.Struct({
   id: Schema.String,
   filter: Schema.NullOr(IrFilterSchema),
   aggregation: IrAggregationSchema,
-  unit: Schema.NullOr(Schema.String)
+  unit: Schema.NullOr(Schema.String),
+  reverse: Schema.NullOr(
+    Schema.Struct({
+      filter: IrFilterSchema,
+      window_s: Schema.NullOr(Schema.Number)
+    })
+  )
+})
+
+export const IrOutcomeSchema = Schema.Struct({
+  id: Schema.String,
+  correlate: Schema.String,
+  steps: Schema.Array(IrFilterSchema),
+  fail: Schema.NullOr(
+    Schema.Struct({
+      filter: IrFilterSchema,
+      window_s: Schema.NullOr(Schema.Number)
+    })
+  )
 })
 
 export const IrPriceSchema = Schema.Union(
@@ -100,9 +118,18 @@ export const IrInvariantSchema = Schema.Struct({
   behavior: Schema.NullOr(Schema.Literal("warn", "cap", "block", "notify"))
 })
 
+export const IrOverrideSchema = Schema.Struct({
+  customer: Schema.String,
+  until: Schema.NullOr(Schema.String),
+  prices: Schema.Array(IrPriceSchema),
+  entitlements: Schema.Array(IrEntitlementSchema)
+})
+
 export const BillingIrSchema: Schema.Schema<BillingIr> = Schema.Struct({
   version: Schema.Literal(1),
   meters: Schema.Array(IrMeterSchema),
+  outcomes: Schema.Array(IrOutcomeSchema),
   products: Schema.Array(IrProductSchema),
-  invariants: Schema.Array(IrInvariantSchema)
+  invariants: Schema.Array(IrInvariantSchema),
+  overrides: Schema.Array(IrOverrideSchema)
 })

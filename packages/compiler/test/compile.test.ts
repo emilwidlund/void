@@ -46,9 +46,11 @@ describe("compile", () => {
             value: "api.request"
           },
           aggregation: { type: "count" },
-          unit: null
+          unit: null,
+          reverse: null
         }
       ],
+      outcomes: [],
       products: [
         {
           id: "pro",
@@ -71,7 +73,8 @@ describe("compile", () => {
           entitlements: []
         }
       ],
-      invariants: []
+      invariants: [],
+      overrides: []
     })
   })
 
@@ -100,18 +103,171 @@ describe("compile", () => {
     })
   })
 
-  it("accepts custom units when they match", () => {
+  it("accepts scalar as the unit of counted things", () => {
     const outcome = run(`
-      meter llm { aggregate sum(event.tokens)  unit tokens }
+      meter llm { aggregate sum(event.tokens)  unit scalar }
       product pro {
         name "Pro"
-        meter llm { per_unit 0.002 USD_CENTS per token }
+        meter llm { per_unit 0.002 USD_CENTS per scalar }
       }
     `)
     expect(Either.isRight(outcome)).toBe(true)
     if (!Either.isRight(outcome)) return
     expect(outcome.right.diagnostics).toEqual([])
-    expect(outcome.right.ir.meters[0]?.unit).toBe("token")
+    expect(outcome.right.ir.meters[0]?.unit).toBe("scalar")
+    expect(outcome.right.ir.products[0]?.prices[0]).toMatchObject({
+      per: "scalar",
+      unit_factor: 1
+    })
+  })
+
+  it("rejects made-up units", () => {
+    const outcome = run(`
+      meter llm { aggregate sum(event.tokens)  unit tokens }
+      product pro { name "Pro" meter llm { per_unit 1 USD per request } }
+    `)
+    expect(Either.isLeft(outcome)).toBe(true)
+    if (!Either.isLeft(outcome)) return
+    const codes = outcome.left.diagnostics.filter((d) => d.code === "VOID122")
+    expect(codes).toHaveLength(2)
+    expect(codes[0]?.message).toContain("counts are `scalar`")
+  })
+
+  it("compiles reverse_on with a time window in seconds", () => {
+    const outcome = run(`
+      meter tickets {
+        filter event.name == "ticket.closed"
+        aggregate count
+        reverse_on event.name == "ticket.reopened" within 7 days
+      }
+    `)
+    expect(Either.isRight(outcome)).toBe(true)
+    if (!Either.isRight(outcome)) return
+    expect(outcome.right.ir.meters[0]?.reverse).toEqual({
+      filter: {
+        type: "comparison",
+        property: "event.name",
+        op: "eq",
+        value: "ticket.reopened"
+      },
+      window_s: 604800
+    })
+  })
+
+  it("compiles outcome chains and prices them like meters", () => {
+    const outcome = run(`
+      outcome ticket_resolution {
+        correlate event.ticket_id
+        step event.name == "ticket.opened"
+        step event.name == "ticket.closed" and event.resolution == "solved"
+        fail_on event.name == "ticket.reopened" within 7 days
+      }
+      product agent {
+        name "Agent"
+        outcome ticket_resolution { per_unit 2 USD }
+      }
+    `)
+    expect(Either.isRight(outcome)).toBe(true)
+    if (!Either.isRight(outcome)) return
+    expect(outcome.right.ir.outcomes).toEqual([
+      {
+        id: "ticket_resolution",
+        correlate: "event.ticket_id",
+        steps: [
+          { type: "comparison", property: "event.name", op: "eq", value: "ticket.opened" },
+          {
+            type: "and",
+            operands: [
+              {
+                type: "comparison",
+                property: "event.name",
+                op: "eq",
+                value: "ticket.closed"
+              },
+              {
+                type: "comparison",
+                property: "event.resolution",
+                op: "eq",
+                value: "solved"
+              }
+            ]
+          }
+        ],
+        fail: {
+          filter: {
+            type: "comparison",
+            property: "event.name",
+            op: "eq",
+            value: "ticket.reopened"
+          },
+          window_s: 604800
+        }
+      }
+    ])
+    expect(outcome.right.ir.products[0]?.prices[0]).toMatchObject({
+      type: "metered",
+      meter: "ticket_resolution",
+      per: null,
+      unit_factor: 1
+    })
+  })
+
+  it("compiles customer overrides", () => {
+    const outcome = run(`
+      meter api_calls { aggregate count }
+      product pro {
+        name "Pro"
+        meter api_calls { per_unit 10 USD_CENTS }
+      }
+      override customer "acme" {
+        until "2027-01-01"
+        price recurring monthly 19 USD
+        meter api_calls { per_unit 8 USD_CENTS  included 50_000 }
+        entitlement seats { limit 20 }
+      }
+    `)
+    expect(Either.isRight(outcome)).toBe(true)
+    if (!Either.isRight(outcome)) return
+    expect(outcome.right.ir.overrides).toEqual([
+      {
+        customer: "acme",
+        until: "2027-01-01",
+        prices: [
+          {
+            type: "recurring",
+            interval: "month",
+            amount: { currency: "USD", amount: "1900" }
+          },
+          {
+            type: "metered",
+            meter: "api_calls",
+            per_unit: { currency: "USD", amount: "8" },
+            included_units: 50000,
+            per: null,
+            unit_factor: 1
+          }
+        ],
+        entitlements: [{ type: "limit", id: "seats", limit: 20 }]
+      }
+    ])
+  })
+
+  it("holds overrides to the same static invariants", () => {
+    const outcome = run(`
+      meter api_calls { aggregate count }
+      product pro {
+        name "Pro"
+        meter api_calls { per_unit 10 USD_CENTS }
+      }
+      invariant "API price floor" { price(api_calls) >= 5 USD_CENTS }
+      override customer "megacorp" {
+        meter api_calls { per_unit 2 USD_CENTS }
+      }
+    `)
+    expect(Either.isLeft(outcome)).toBe(true)
+    if (!Either.isLeft(outcome)) return
+    const violation = outcome.left.diagnostics.find((d) => d.code === "VOID133")
+    expect(violation?.message).toContain("override for `megacorp`")
   })
 
   it("compiles margin pricing to a fraction", () => {

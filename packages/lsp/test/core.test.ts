@@ -115,7 +115,9 @@ describe("blockContext and completions", () => {
     expect(completionsAt(config, 0).map((c) => c.label)).toEqual([
       "meter",
       "product",
-      "invariant"
+      "invariant",
+      "override",
+      "outcome"
     ])
     const meterFields = completionsAt(config, config.indexOf("aggregate"))
     expect(meterFields.map((c) => c.label)).toContain("filter")

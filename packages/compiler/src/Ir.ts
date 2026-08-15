@@ -7,7 +7,10 @@ import type {
   Literal,
   MeterDecl,
   Money,
+  OutcomeDecl,
+  OverrideDecl,
   ProductDecl,
+  ProductField,
   SourceFile
 } from "./Ast.js"
 import { resolveUnit, unitFactor } from "./Units.js"
@@ -41,8 +44,34 @@ export interface IrMeter {
   readonly id: string
   readonly filter: IrFilter | null
   readonly aggregation: IrAggregation
-  /** canonical unit of the aggregated value ("second", "gigabyte", "token"), or null */
+  /** canonical unit of the aggregated value ("second", "gigabyte", "scalar"), or null */
   readonly unit: string | null
+  /**
+   * Correction rule: an event matching `filter` reverses one prior charge
+   * (LIFO, never below zero), only within `window_s` seconds of the original
+   * charge when set. Null = the meter is append-only.
+   */
+  readonly reverse: {
+    readonly filter: IrFilter
+    readonly window_s: number | null
+  } | null
+}
+
+/**
+ * Success as a correlated chain of events. Instances are keyed per customer
+ * by the `correlate` property; steps must occur in order; a completed chain
+ * counts one scalar unit of usage under the outcome's id. `fail` aborts an
+ * in-flight chain, or reverses a completed one within `window_s` seconds.
+ */
+export interface IrOutcome {
+  readonly id: string
+  /** event property identifying one instance, e.g. "event.ticket_id" */
+  readonly correlate: string
+  readonly steps: ReadonlyArray<IrFilter>
+  readonly fail: {
+    readonly filter: IrFilter
+    readonly window_s: number | null
+  } | null
 }
 
 export type IrPrice =
@@ -114,11 +143,26 @@ export interface IrInvariant {
   readonly behavior: "warn" | "cap" | "block" | "notify" | null
 }
 
+/**
+ * A negotiated per-customer deal: prices here replace the product's price
+ * for the same meter (and a recurring price replaces the base fee); override
+ * entitlements replace same-id product entitlements. Inactive after `until`.
+ */
+export interface IrOverride {
+  readonly customer: string
+  /** ISO date ("2027-01-01") after which the override no longer applies, or null */
+  readonly until: string | null
+  readonly prices: ReadonlyArray<IrPrice>
+  readonly entitlements: ReadonlyArray<IrEntitlement>
+}
+
 export interface BillingIr {
   readonly version: 1
   readonly meters: ReadonlyArray<IrMeter>
+  readonly outcomes: ReadonlyArray<IrOutcome>
   readonly products: ReadonlyArray<IrProduct>
   readonly invariants: ReadonlyArray<IrInvariant>
+  readonly overrides: ReadonlyArray<IrOverride>
 }
 
 /** Shifts the decimal point of a positive decimal string `places` digits to the right. */
@@ -208,21 +252,36 @@ const emitMeter = (meter: MeterDecl): IrMeter => {
   let filter: IrFilter | null = null
   let aggregation: IrAggregation = { type: "count" }
   let unit: string | null = null
+  let reverse: IrMeter["reverse"] = null
   for (const field of meter.fields) {
     if (field._tag === "FilterField") filter = emitFilter(field.expr)
     else if (field._tag === "AggregateField") aggregation = emitAggregation(field.aggregate)
-    else unit = resolveUnit(field.name.name).canonical
+    else if (field._tag === "UnitField") {
+      unit = resolveUnit(field.name.name)?.canonical ?? field.name.name.toLowerCase()
+    } else {
+      const windowUnit =
+        field.window !== null ? resolveUnit(field.window.unit.name) : null
+      reverse = {
+        filter: emitFilter(field.expr),
+        window_s:
+          field.window !== null && windowUnit !== null
+            ? Number(field.window.value) * windowUnit.factor
+            : null
+      }
+    }
   }
-  return { id: meter.id.name, filter, aggregation, unit }
+  return { id: meter.id.name, filter, aggregation, unit, reverse }
 }
 
-const emitProduct = (product: ProductDecl, meterUnits: ReadonlyMap<string, string>): IrProduct => {
-  let name = product.id.name
+/** Shared by products and overrides: prices and entitlements from fields. */
+const emitPricing = (
+  fields: ReadonlyArray<ProductField>,
+  meterUnits: ReadonlyMap<string, string>
+): { prices: Array<IrPrice>; entitlements: Array<IrEntitlement> } => {
   const prices: Array<IrPrice> = []
   const entitlements: Array<IrEntitlement> = []
-  for (const field of product.fields) {
+  for (const field of fields) {
     if (field._tag === "NameField") {
-      name = field.value
       continue
     }
     if (field._tag === "RecurringPriceField") {
@@ -259,10 +318,13 @@ const emitProduct = (product: ProductDecl, meterUnits: ReadonlyMap<string, strin
         perUnit = toIrMoney(pricingField.money)
         if (pricingField.per !== null) {
           const priced = resolveUnit(pricingField.per.name)
-          per = priced.canonical
-          const meterUnit = meterUnits.get(field.meter.name)
+          per = priced?.canonical ?? pricingField.per.name.toLowerCase()
+          const declared = meterUnits.get(field.meter.name)
+          const meterUnit = declared !== undefined ? resolveUnit(declared) : null
           // Cross-dimension pairs are compile errors; here units are compatible.
-          if (meterUnit !== undefined) factor = unitFactor(resolveUnit(meterUnit), priced)
+          if (priced !== null && meterUnit !== null) {
+            factor = unitFactor(meterUnit, priced)
+          }
         }
       } else if (pricingField._tag === "MarginField") {
         margin = Number(pricingField.value) / 100
@@ -283,7 +345,34 @@ const emitProduct = (product: ProductDecl, meterUnits: ReadonlyMap<string, strin
           }
     )
   }
-  return { id: product.id.name, name, prices, entitlements }
+  return { prices, entitlements }
+}
+
+const emitProduct = (
+  product: ProductDecl,
+  meterUnits: ReadonlyMap<string, string>
+): IrProduct => {
+  const nameField = product.fields.find((f) => f._tag === "NameField")
+  const { entitlements, prices } = emitPricing(product.fields, meterUnits)
+  return {
+    id: product.id.name,
+    name: nameField?._tag === "NameField" ? nameField.value : product.id.name,
+    prices,
+    entitlements
+  }
+}
+
+const emitOverride = (
+  override: OverrideDecl,
+  meterUnits: ReadonlyMap<string, string>
+): IrOverride => {
+  const { entitlements, prices } = emitPricing(override.fields, meterUnits)
+  return {
+    customer: override.customer,
+    until: override.until?.value ?? null,
+    prices,
+    entitlements
+  }
 }
 
 const emitInvariants = (file: SourceFile): ReadonlyArray<IrInvariant> =>
@@ -309,20 +398,54 @@ const emitInvariants = (file: SourceFile): ReadonlyArray<IrInvariant> =>
       })
     )
 
+const emitOutcome = (outcome: OutcomeDecl): IrOutcome => {
+  let correlate = ""
+  const steps: Array<IrFilter> = []
+  let fail: IrOutcome["fail"] = null
+  for (const field of outcome.fields) {
+    if (field._tag === "CorrelateField") {
+      correlate = field.path.segments.join(".")
+    } else if (field._tag === "StepField") {
+      steps.push(emitFilter(field.expr))
+    } else {
+      const windowUnit =
+        field.window !== null ? resolveUnit(field.window.unit.name) : null
+      fail = {
+        filter: emitFilter(field.expr),
+        window_s:
+          field.window !== null && windowUnit !== null
+            ? Number(field.window.value) * windowUnit.factor
+            : null
+      }
+    }
+  }
+  return { id: outcome.id.name, correlate, steps, fail }
+}
+
 /** Emits the IR for a checked source file. Assumes `check` reported no errors. */
 export const emit = (file: SourceFile): BillingIr => {
   const meters = file.decls
     .filter((d): d is MeterDecl => d._tag === "MeterDecl")
     .map(emitMeter)
-  const meterUnits = new Map(
-    meters.flatMap((meter) => (meter.unit === null ? [] : [[meter.id, meter.unit] as const]))
-  )
+  const outcomes = file.decls
+    .filter((d): d is OutcomeDecl => d._tag === "OutcomeDecl")
+    .map(emitOutcome)
+  const meterUnits = new Map([
+    ...meters.flatMap((meter) =>
+      meter.unit === null ? [] : [[meter.id, meter.unit] as const]
+    ),
+    ...outcomes.map((outcome) => [outcome.id, "scalar"] as const)
+  ])
   return {
     version: 1,
     meters,
+    outcomes,
     products: file.decls
       .filter((d): d is ProductDecl => d._tag === "ProductDecl")
       .map((product) => emitProduct(product, meterUnits)),
-    invariants: emitInvariants(file)
+    invariants: emitInvariants(file),
+    overrides: file.decls
+      .filter((d): d is OverrideDecl => d._tag === "OverrideDecl")
+      .map((override) => emitOverride(override, meterUnits))
   }
 }

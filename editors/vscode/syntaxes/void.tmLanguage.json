@@ -30,11 +30,11 @@
       "patterns": [{ "match": "\\\\.", "name": "constant.character.escape.void" }]
     },
     "declaration": {
-      "match": "^\\s*\\b(meter|product|invariant)\\b",
+      "match": "^\\s*\\b(meter|product|invariant|override|outcome)\\b",
       "captures": { "1": { "name": "storage.type.void" } }
     },
     "field-keyword": {
-      "match": "\\b(filter|aggregate|unit|name|price|recurring|per_unit|included|margin|entitlement|meter|limit|spend|else|per|grant|burn)\\b",
+      "match": "\\b(filter|aggregate|unit|reverse_on|within|correlate|step|fail_on|outcome|name|price|recurring|per_unit|included|margin|entitlement|meter|limit|spend|else|per|until|customer|override)\\b",
       "name": "keyword.other.field.void"
     },
     "logical": {

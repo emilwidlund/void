@@ -6,14 +6,16 @@ import type { UsageRow } from "../lib/types"
 const ir: BillingIr = {
   version: 1,
   meters: [
-    { id: "api_calls", filter: null, aggregation: { type: "count" }, unit: null },
+    { id: "api_calls", filter: null, aggregation: { type: "count" }, unit: null, reverse: null },
     {
       id: "compute_seconds",
       filter: null,
       aggregation: { type: "sum", property: "event.duration_s" },
-      unit: null
+      unit: null,
+      reverse: null
     }
   ],
+  outcomes: [],
   products: [
     {
       id: "pro",
@@ -40,7 +42,8 @@ const ir: BillingIr = {
       entitlements: []
     }
   ],
-  invariants: []
+  invariants: [],
+  overrides: []
 }
 
 const row = (meter: string, customer: string, value: number): UsageRow => ({
@@ -88,6 +91,7 @@ describe("computeSpend", () => {
   it("normalizes non-monthly recurring intervals to a 30-day equivalent", () => {
     const yearly: BillingIr = {
       ...ir,
+      outcomes: [],
       products: [
         {
           id: "pro",
@@ -110,7 +114,8 @@ describe("computeSpend", () => {
           entitlements: []
         }
       ],
-      invariants: []
+      invariants: [],
+      overrides: []
     }
     const overview = computeSpend([row("api_calls", "acme", 0)], yearly, deployedAt, tenDaysLater)
     expect(overview.customers[0]!.baseMinor).toBeCloseTo(36500 * (30 / 365))
@@ -170,9 +175,11 @@ describe("computeSpend", () => {
           id: "compute_seconds",
           filter: null,
           aggregation: { type: "sum", property: "event.duration_s" },
-          unit: null
+          unit: null,
+          reverse: null
         }
       ],
+      outcomes: [],
       products: [
         {
           id: "gpu",
@@ -181,7 +188,8 @@ describe("computeSpend", () => {
           entitlements: []
         }
       ],
-      invariants: []
+      invariants: [],
+      overrides: []
     }
     const overview = computeSpend(
       [{ meter: "compute_seconds", customer: "acme", aggregation: "sum", value: 100 }],
@@ -211,9 +219,11 @@ describe("computeSpend", () => {
           id: "compute",
           filter: null,
           aggregation: { type: "sum", property: "event.duration_ms" },
-          unit: "millisecond"
+          unit: "millisecond",
+          reverse: null
         }
       ],
+      outcomes: [],
       products: [
         {
           id: "pro",
@@ -231,7 +241,8 @@ describe("computeSpend", () => {
           entitlements: []
         }
       ],
-      invariants: []
+      invariants: [],
+      overrides: []
     }
     const overview = computeSpend(
       [{ meter: "compute", customer: "acme", aggregation: "sum", value: 120_000 }],
@@ -276,6 +287,56 @@ describe("computeSpend", () => {
     expect(acme.cappedMinor).toBeCloseTo(7900)
     expect(acme.projectedMinor).toBe(5000)
     expect(overview.totals.cappedMinor).toBeCloseTo(7900)
+  })
+
+  it("applies customer overrides to prices and base fees until expiry", () => {
+    const withOverride: BillingIr = {
+      ...ir,
+      overrides: [
+        {
+          customer: "acme",
+          until: "2027-01-01",
+          prices: [
+            {
+              type: "recurring",
+              interval: "month",
+              amount: { currency: "USD", amount: "1900" }
+            },
+            {
+              type: "metered",
+              meter: "api_calls",
+              per_unit: { currency: "USD", amount: "5" },
+              included_units: 0,
+              per: null,
+              unit_factor: 1
+            }
+          ],
+          entitlements: []
+        }
+      ]
+    }
+    const overview = computeSpend(
+      [row("api_calls", "acme", 100), row("api_calls", "globex", 100)],
+      withOverride,
+      deployedAt,
+      tenDaysLater
+    )
+    const acme = overview.customers.find((c) => c.customer === "acme")!
+    const globex = overview.customers.find((c) => c.customer === "globex")!
+    // acme: negotiated base $19, 5¢/call with no allowance -> 1900 + 500
+    expect(acme.baseMinor).toBe(1900)
+    expect(acme.accruedMinor).toBeCloseTo(500)
+    // globex: list price base $29, 100 calls inside the 1000 allowance
+    expect(globex.baseMinor).toBe(2900)
+    expect(globex.accruedMinor).toBe(0)
+
+    // expired override falls back to list pricing
+    const expired: BillingIr = {
+      ...withOverride,
+      overrides: [{ ...withOverride.overrides[0]!, until: "2026-08-05" }]
+    }
+    const later = computeSpend([row("api_calls", "acme", 100)], expired, deployedAt, tenDaysLater)
+    expect(later.customers[0]!.baseMinor).toBe(2900)
   })
 
   it("ignores usage on meters that no product prices", () => {

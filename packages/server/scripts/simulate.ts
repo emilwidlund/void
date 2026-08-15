@@ -59,7 +59,41 @@ const randomEvent = (): SimEvent => {
       _cost: { amount: round6(duration_s * 0.00035), currency: "USD" }
     }
   }
+  if (roll < 0.95) {
+    return ticketEvent(external_customer_id)
+  }
   return { name: pick(OTHER_EVENTS), external_customer_id, properties: {} }
+}
+
+// Ticket lifecycle per customer, so the `ticket_resolution` outcome chain
+// (opened -> closed solved, reversed by reopened) plays out realistically.
+const tickets = new Map<string, { open: Array<string>; closed: Array<string>; seq: number }>()
+
+const ticketEvent = (external_customer_id: string): SimEvent => {
+  const state = tickets.get(external_customer_id) ?? { open: [], closed: [], seq: 0 }
+  tickets.set(external_customer_id, state)
+  const roll = Math.random()
+  if (state.open.length === 0 || roll < 0.45) {
+    state.seq += 1
+    const ticket_id = `${external_customer_id}-t${state.seq}`
+    state.open.push(ticket_id)
+    return { name: "ticket.opened", external_customer_id, properties: { ticket_id } }
+  }
+  if (roll < 0.9 || state.closed.length === 0) {
+    const ticket_id = state.open.shift()!
+    state.closed.push(ticket_id)
+    if (state.closed.length > 20) state.closed.shift()
+    return {
+      name: "ticket.closed",
+      external_customer_id,
+      properties: {
+        ticket_id,
+        resolution: Math.random() < 0.85 ? "solved" : "unresolved"
+      }
+    }
+  }
+  const ticket_id = state.closed.pop()!
+  return { name: "ticket.reopened", external_customer_id, properties: { ticket_id } }
 }
 
 let sent = 0

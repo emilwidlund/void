@@ -112,7 +112,7 @@ describe("parse", () => {
   it("rejects unknown top-level declarations", () => {
     const { diagnostics } = parseSource("plan pro { }")
     expect(diagnostics[0]?.message).toContain(
-      "expected `meter`, `product` or `invariant`"
+      "expected `meter`, `product`, `invariant`, `override` or `outcome`"
     )
   })
 

@@ -13,10 +13,12 @@ export const checkCommand = Command.make("check", { file }, ({ file }) =>
     const result = outcome.right
     yield* reportWarnings(result, source, file)
     const meters = result.ir.meters.length
+    const outcomes = result.ir.outcomes.length
     const products = result.ir.products.length
     const warnings = result.diagnostics.length
     yield* Console.log(
       `✓ ${file} — ${meters} meter${meters === 1 ? "" : "s"}, ` +
+        (outcomes > 0 ? `${outcomes} outcome${outcomes === 1 ? "" : "s"}, ` : "") +
         `${products} product${products === 1 ? "" : "s"}` +
         (warnings > 0 ? `, ${warnings} warning${warnings === 1 ? "" : "s"}` : "")
     )

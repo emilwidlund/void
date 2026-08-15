@@ -12,6 +12,21 @@ const source = `
     unit seconds
   }
   invariant "bill shock" { spend(customer) <= 500 USD }
+  outcome resolution {
+    correlate event.ticket_id
+    step event.name == "ticket.closed"
+    fail_on event.name == "ticket.reopened" within 2 days
+  }
+  meter tickets {
+    filter event.name == "ticket.closed"
+    aggregate count
+    reverse_on event.name == "ticket.reopened" within 3 days
+  }
+  override customer "acme" {
+    until "2027-06-01"
+    meter compute_seconds { per_unit 2 USD per hour }
+    entitlement seats { limit 20 }
+  }
   invariant "healthy compute" { margin(customer) >= 20% }
   product unit_product {
     name "Unit Product"

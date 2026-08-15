@@ -1,10 +1,10 @@
 /**
- * Unit registry for dimensional analysis. Known units belong to a dimension
- * (time, data) with a conversion factor to that dimension's base unit, so a
- * meter recording milliseconds can be priced per second and the compiler
- * emits the conversion. Unknown units (tokens, requests, seats, ...) are
- * opaque: they form their own dimension and only match themselves, so
- * user-defined units still get mismatch checking for free.
+ * Unit registry for dimensional analysis. Units exist for dimensioned
+ * quantities — time and data — with a conversion factor to the dimension's
+ * base unit, so a meter recording milliseconds can be priced per second and
+ * the compiler emits the conversion. Everything countable (requests, tokens,
+ * seats, ...) is the dimensionless `scalar` unit; unknown unit names are
+ * compile errors rather than ad-hoc dimensions.
  */
 
 export interface ResolvedUnit {
@@ -23,6 +23,8 @@ const unit = (canonical: string, dimension: string, factor: number): ResolvedUni
 })
 
 const KNOWN: Readonly<Record<string, ResolvedUnit>> = {
+  // dimensionless counts
+  scalar: unit("scalar", "scalar", 1),
   // time (base: second)
   ms: unit("millisecond", "time", 0.001),
   millisecond: unit("millisecond", "time", 0.001),
@@ -48,8 +50,9 @@ const KNOWN: Readonly<Record<string, ResolvedUnit>> = {
   terabyte: unit("terabyte", "data", 1e12)
 }
 
-/** Display list of known units, for tooling (completion, docs). */
+/** Display list of known units, for tooling (completion, docs, diagnostics). */
 export const KNOWN_UNIT_NAMES: ReadonlyArray<string> = [
+  "scalar",
   "ms",
   "seconds",
   "minutes",
@@ -62,17 +65,16 @@ export const KNOWN_UNIT_NAMES: ReadonlyArray<string> = [
   "tb"
 ]
 
-export const resolveUnit = (raw: string): ResolvedUnit => {
+/** Resolves a unit name (aliases and plurals included), or null if unknown. */
+export const resolveUnit = (raw: string): ResolvedUnit | null => {
   const lower = raw.toLowerCase()
   const direct = KNOWN[lower]
   if (direct !== undefined) return direct
-  // Plural of a known or custom unit: "seconds" -> "second", "tokens" -> "token".
-  // Two-letter names ("ms") are never stripped.
+  // Plural of a known unit: "seconds" -> "second". Two-letter names ("ms")
+  // are never stripped.
   const singular =
     lower.endsWith("s") && lower.length > 2 ? lower.slice(0, -1) : lower
-  const known = KNOWN[singular]
-  if (known !== undefined) return known
-  return unit(singular, `custom:${singular}`, 1)
+  return KNOWN[singular] ?? null
 }
 
 /**

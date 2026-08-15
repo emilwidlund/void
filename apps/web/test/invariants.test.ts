@@ -5,7 +5,8 @@ import { computeSpend } from "../lib/spend"
 
 const ir: BillingIr = {
   version: 1,
-  meters: [{ id: "api_calls", filter: null, aggregation: { type: "count" }, unit: null }],
+  meters: [{ id: "api_calls", filter: null, aggregation: { type: "count" }, unit: null, reverse: null }],
+  outcomes: [],
   products: [
     {
       id: "pro",
@@ -23,7 +24,8 @@ const ir: BillingIr = {
       entitlements: []
     }
   ],
-  invariants: []
+  invariants: [],
+  overrides: []
 }
 
 const spendCap: IrInvariant = {

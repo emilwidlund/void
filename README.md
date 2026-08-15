@@ -62,12 +62,19 @@ non-2xx response exits 1, so it drops straight into a CI/CD pipeline.
     `<`, `<=`) over `event.*` properties, combined with `and` / `or` and
     parentheses (`and` binds tighter).
   - `aggregate <fn>` — `count`, or `sum|max|min|avg|unique(event.<property>)`.
-  - `unit <name>` — what one aggregated unit *is* (`unit seconds`,
-    `unit gb`, `unit tokens`). Known units carry a dimension — time
-    (`ms`/`seconds`/`minutes`/`hours`/`days`) and data
-    (`bytes`/`kb`/`mb`/`gb`/`tb`) — with conversion factors; anything else
-    (`tokens`, `requests`, `seats`) is an opaque unit that only matches
-    itself. Names are normalized (`seconds` ≡ `sec` ≡ `s`).
+  - `reverse_on <filter> [within <n> <time-unit>]` — outcome corrections:
+    an event matching the reverse filter unwinds one prior charge on this
+    meter (most recent first, only within the window when declared, never
+    below zero). This is what makes pay-per-outcome pricing honest — a
+    resolved ticket bills, a reopen within 7 days unbills it. Requires a
+    `count` or `sum` aggregation (VOID123); the window must be a time span
+    (VOID124). Reversals are matched by event `timestamp` when provided.
+  - `unit <name>` — what one aggregated unit *is*. Units exist for
+    dimensioned quantities — time (`ms`/`seconds`/`minutes`/`hours`/`days`)
+    and data (`bytes`/`kb`/`mb`/`gb`/`tb`) — with conversion factors between
+    them; everything countable (requests, tokens, seats) is the dimensionless
+    **`scalar`** unit. Made-up unit names are compile errors (VOID122), and
+    names are normalized (`seconds` ≡ `sec` ≡ `s`).
 - **`product <id> { ... }`** — a sellable product.
   - `name "..."` — display name (required).
   - `price recurring <monthly|yearly|weekly|daily> <amount> <currency>`
@@ -93,6 +100,30 @@ non-2xx response exits 1, so it drops straight into a CI/CD pipeline.
     `entitlement api_quota { meter api_calls limit 100_000 }` is a usage cap
     checked against a top-level meter's live aggregation. Limits vary per
     product, so entitlements are declared inline rather than at the top level.
+- **`outcome <id> { ... }`** — success-based billing as a correlated chain of
+  events, declared at the top level like a meter:
+  - `correlate event.<property>` — which event property identifies one
+    instance of the outcome (a ticket id, a task id). Required (VOID140).
+  - `step <filter>` — one link in the chain; steps must occur in declaration
+    order for the same correlation key. At least one required (VOID141).
+  - `fail_on <filter> [within <n> <time-unit>]` — aborts an in-flight chain,
+    or reverses a *completed* one within the window — and because instances
+    are correlated, a reopen reverses exactly its own ticket's charge.
+
+  A completed chain counts one `scalar` unit of usage under the outcome's id,
+  so outcomes price, gate and verify exactly like meters: products bind them
+  with `outcome <id> { per_unit ... }` (margin pricing is rejected — VOID143;
+  binding namespaces are checked — VOID142), entitlements can cap them, and
+  invariants can put price floors on them.
+- **`override customer "<id>" { ... }`** — a negotiated deal as config: meter
+  price bindings and entitlements that replace the list versions for one
+  customer, an optional replacement `price recurring ...` for the base fee,
+  and an optional `until "2027-01-01"` expiry after which list pricing
+  resumes. Overrides are held to the same static invariants as products — an
+  enterprise discount below a declared price or margin floor fails the build
+  (the deal desk cannot out-negotiate the config). Override entitlements
+  replace same-id product grants and can add new ones on the entitlements
+  endpoint.
 - **`invariant "<name>" { <metric>(<subject>) <op> <threshold> }`** — a
   property the billing system must uphold, declared next to the pricing it
   constrains. Meter-scoped metrics are **compile-checked**: `price(api_calls)
@@ -157,8 +188,9 @@ Endpoints:
   "external_customer_id": "acme", "properties": { ... } }] }`. Every event is
   evaluated against each meter's filter and folded into its aggregation
   (count/sum/max/min/avg/unique), keyed per customer (`anonymous` when no
-  customer id is given). Responds 202 with a per-meter match summary, or 409
-  if no config has been deployed yet.
+  customer id is given). Events matching a meter's `reverse_on` filter unwind
+  a prior charge instead of adding one. Responds 202 with per-meter `matched`
+  and `reversed` counts, or 409 if no config has been deployed yet.
 
   Events may carry an optional **`_cost`** — what serving the event cost you:
   `"_cost": { "amount": 0.0042, "currency": "USD" }` (amount in major units,
