@@ -58,6 +58,19 @@ importers:
         specifier: ^9.0.1
         version: 9.0.1
 
+  examples:
+    dependencies:
+      '@void/sdk':
+        specifier: workspace:*
+        version: link:../packages/sdk
+    devDependencies:
+      '@types/node':
+        specifier: ^24.0.0
+        version: 24.13.3
+      typescript:
+        specifier: ^5.9.0
+        version: 5.9.3
+
   packages/cli:
     dependencies:
       '@effect/cli':
@@ -123,6 +136,25 @@ importers:
       '@types/node':
         specifier: ^24.0.0
         version: 24.13.3
+      typescript:
+        specifier: ^5.9.0
+        version: 5.9.3
+      vitest:
+        specifier: ^3.2.0
+        version: 3.2.7(@types/node@24.13.3)(jiti@2.7.0)(lightningcss@1.32.0)(tsx@4.23.12)(yaml@2.9.0)
+
+  packages/sdk:
+    dependencies:
+      '@void/compiler':
+        specifier: workspace:*
+        version: link:../compiler
+    devDependencies:
+      '@types/node':
+        specifier: ^24.0.0
+        version: 24.13.3
+      effect:
+        specifier: ^3.22.1
+        version: 3.22.1
       typescript:
         specifier: ^5.9.0
         version: 5.9.3

@@ -164,12 +164,60 @@ non-2xx response exits 1, so it drops straight into a CI/CD pipeline.
   `editors/vscode/README.md` for install instructions; the server also works
   with any LSP-capable editor via `void-lsp --stdio`.
 
+## TypeScript SDK
+
+`.void` files aren't the only frontend: `@void/sdk`'s `defineBilling` takes a
+fully typed config object and compiles it to **byte-identical IR** (and
+therefore the same deploy checksum) as the DSL — the two coexist in one
+pipeline. See `examples/pro.ts` for the full Pro plan as code.
+
+```ts
+import { defineBilling, on, usd, usdCents } from "@void/sdk"
+
+const billing = defineBilling({
+  meters: {
+    api_calls: { filter: on("api.request"), aggregate: "count", unit: "scalar" },
+    ticket_resolution: {
+      correlate: "ticket_id",
+      steps: [on("ticket.opened"), on("ticket.closed", { resolution: "solved" })],
+      failOn: { on: on("ticket.reopened"), within: "7 days" },
+    },
+  },
+  products: {
+    pro: {
+      name: "Pro Plan",
+      price: { every: "month", amount: usd(29) },
+      entitlements: { sso: true, api_quota: { meter: "api_calls", limit: 100_000 } },
+      usage: {
+        api_calls: { perUnit: usdCents(10), included: 10_000 },
+        ticket_resolution: { perUnit: usd(2) },
+      },
+    },
+  },
+  invariants: [
+    { name: "bill shock", assert: { spend: "customer", lte: usd(500) }, else: "cap" },
+  ],
+})
+
+const client = billing.connect({ endpoint: "http://localhost:4000" })
+await client.deploy() // no-op when the checksum is already active
+await client.track("api.request", { customer: "acme", cost: usdCents(0.4) })
+await client.allowed("acme", "api_quota") // entitlement ids are literal types
+```
+
+References are `keyof`-checked (pricing a typo'd meter is a compile error),
+values are literal-typed (`"60%"`, `"7 days"`), and static invariants are
+proven when `defineBilling` runs — a customer override priced below a
+declared floor throws before anything deploys, with `else: "warn"` violations
+collected on `billing.warnings` instead.
+
 ## Workspace
 
 | Package | Purpose |
 | --- | --- |
 | `@void/compiler` | Lexer → parser → checker → IR emitter, span-based diagnostics, IR schema. Built on [Effect](https://effect.website). |
 | `@void/cli` | `void` CLI (`init`, `check`, `build`, `deploy`, `fmt`) built on `@effect/cli`. |
+| `@void/sdk` | TypeScript frontend: `defineBilling` compiles typed config to the same IR and returns a typed client (deploy, track, entitlements). |
 | `@void/lsp` | Language server: live diagnostics, completion, go-to-definition, hover. |
 | `@void/server` | Void server: accepts deploys, ingests events, runs meter aggregation. |
 | `@void/web` | Next.js dashboard (`apps/web`): live earnings, projections, per-customer spend. |
