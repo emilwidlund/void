@@ -1,0 +1,26 @@
+# The production-shaped topology for the ticketing demo: the merchant hosts
+# the proxy next to their app; the parent server lives elsewhere.
+#
+#   VOID_UPSTREAM=https://billing.example.com \
+#     docker compose -f examples/ticketing/docker-compose.yml up -d
+#
+# For local play the default upstream points at the dev parent server
+# started by `pnpm --filter void-ticketing-demo dev` on the host. The app
+# then talks to the containerized proxy: VOID_PROXY_URL=http://localhost:4012.
+services:
+  void-proxy:
+    build:
+      context: ../..
+      dockerfile: packages/proxy/Dockerfile
+    ports:
+      - "4012:4010"
+    environment:
+      VOID_UPSTREAM: ${VOID_UPSTREAM:-http://host.docker.internal:4000}
+      VOID_TOKEN: ${VOID_TOKEN:-}
+      VOID_SYNC_INTERVAL_MS: "5000"
+    volumes:
+      - ticketing-billing-data:/data
+    restart: unless-stopped
+
+volumes:
+  ticketing-billing-data:

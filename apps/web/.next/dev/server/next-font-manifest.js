@@ -1,1 +1,1 @@
-self.__NEXT_FONT_MANIFEST="{\n  \"app\": {\n    \"[project]/apps/web/app/customers/[customer]/page\": [\n      \"static/media/PPNeueMontreal_VariableUpright-s.p.0i-lo0--5wsek.woff2\"\n    ],\n    \"[project]/apps/web/app/page\": [\n      \"static/media/PPNeueMontreal_VariableUpright-s.p.0i-lo0--5wsek.woff2\"\n    ]\n  },\n  \"appUsingSizeAdjust\": true,\n  \"pages\": {},\n  \"pagesUsingSizeAdjust\": false\n}"
+self.__NEXT_FONT_MANIFEST="{\n  \"app\": {},\n  \"appUsingSizeAdjust\": false,\n  \"pages\": {},\n  \"pagesUsingSizeAdjust\": false\n}"

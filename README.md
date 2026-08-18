@@ -48,6 +48,14 @@ node packages/cli/dist/bin.js deploy examples/pro.void --endpoint http://localho
 node packages/cli/dist/bin.js deploy examples/pro.void --endpoint ... --dry-run   # print payload only
 ```
 
+For CI, `scripts/billing-ci.sh <validate|deploy>` wraps the whole pipeline
+(format check → compile with invariants → deploy) driven only by env vars
+(`BILLING_CONFIGS`, `VOID_ENDPOINT`, `VOID_TOKEN`, `DRY_RUN=1`), and
+`.github/workflows/billing.yml` wires it up for GitHub Actions: PRs touching
+configs get validated with the IR checksum in the job summary (so reviewers
+see whether a change is billing-effective or cosmetic), pushes to `main`
+deploy behind an environment gate. Other runners call the same script.
+
 `deploy` POSTs `{ checksum, ir, meta }` where `checksum` is sha256 over the
 canonical compact IR JSON — comment or formatting changes don't produce a new
 version, so a server can no-op on an already-deployed checksum. `--endpoint`
@@ -219,6 +227,7 @@ collected on `billing.warnings` instead.
 | `@void/cli` | `void` CLI (`init`, `check`, `build`, `deploy`, `fmt`) built on `@effect/cli`. |
 | `@void/sdk` | TypeScript frontend: `defineBilling` compiles typed config to the same IR and returns a typed client (deploy, track, entitlements). |
 | `@void/lsp` | Language server: live diagnostics, completion, go-to-definition, hover. |
+| `@void/proxy` | Merchant-side sidecar: local entitlement/enforcement checks, durable store-and-forward to the parent server, pluggable persistence, Dockerized. |
 | `@void/server` | Void server: accepts deploys, ingests events, runs meter aggregation. |
 | `@void/web` | Next.js dashboard (`apps/web`): live earnings, projections, per-customer spend. |
 
@@ -275,6 +284,35 @@ customers) at the ingestion endpoint until you Ctrl-C it. Compute events carry
 a GPU-second `_cost` and some API requests carry an LLM-ish `_cost`, so the
 margin analytics light up out of the box. `EVENTS_PER_SECOND` and
 `VOID_SERVER_URL` override the defaults.
+
+## Proxy (merchant-side sidecar)
+
+`@void/proxy` is the same API surface as the server, hosted on the merchant's
+own infra next to their application. It embeds the real usage engine, so
+`GET /v1/entitlements/:customer` (and usage, config, the SSE stream) are
+answered locally — zero upstream round trips in the request path, and
+enforcement (spend caps, `else block`) keeps working through a full upstream
+outage. Every ingested batch is stamped, persisted, applied locally, and
+store-and-forwarded to the parent (`VOID_UPSTREAM`) with an at-least-once
+cursor; on restart the proxy boots from its cached config and replays the
+journal, losing nothing. `POST /v1/deploy` passes through to the parent
+(source of truth) and mirrors locally; `POST /v1/sync` forces a flush;
+`/health` reports upstream state and backlog.
+
+Persistence is pluggable: the default is an append-only file journal in
+`VOID_PROXY_DATA`, but any database works via the `PersistenceAdapter`
+interface (six async methods — see `Persistence.ts` for a Postgres sketch),
+and `teePersistence(primary, audit)` dual-writes every batch to two stores
+(e.g. files for recovery plus your warehouse for audit).
+
+Hosting is one command:
+
+```sh
+docker build -f packages/proxy/Dockerfile -t void-proxy .
+docker run -p 4010:4010 -e VOID_UPSTREAM=https://billing.example.com \
+  -v void-proxy-data:/data void-proxy
+# or: docker compose -f packages/proxy/docker-compose.yml up -d
+```
 
 ## Dashboard
 

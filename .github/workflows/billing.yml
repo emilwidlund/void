@@ -1,0 +1,87 @@
+# Billing-as-code pipeline:
+#   - Pull requests touching billing configs are validated: canonical
+#     formatting, full compile (invariants included — a PR that prices an
+#     override below a declared floor fails here), and the IR checksum is
+#     posted to the job summary so reviewers can see whether the change is
+#     billing-effective (checksum changed) or cosmetic (unchanged).
+#   - Pushes to main deploy. Deploys are checksum-idempotent, so re-runs
+#     and no-op merges are safe.
+#
+# All logic lives in scripts/billing-ci.sh so other CI runners reuse it:
+#
+#   GitLab CI:            script: ["pnpm install && pnpm build",
+#                                  "scripts/billing-ci.sh deploy"]
+#   CircleCI / Jenkins:   same two commands; provide VOID_ENDPOINT and
+#                         VOID_TOKEN as protected variables/credentials.
+
+name: billing
+
+on:
+  pull_request:
+    paths:
+      - "examples/**"
+      - "packages/compiler/**"
+      - "packages/cli/**"
+      - ".github/workflows/billing.yml"
+      - "scripts/billing-ci.sh"
+  push:
+    branches: [main]
+
+env:
+  BILLING_CONFIGS: examples/pro.void
+
+jobs:
+  validate:
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm build
+      - run: pnpm test
+      - name: Validate billing configs
+        run: scripts/billing-ci.sh validate
+      - name: Upload compiled IR
+        run: |
+          mkdir -p dist-ir
+          for config in $BILLING_CONFIGS; do
+            node packages/cli/dist/bin.js build "$config" > "dist-ir/$(basename "$config" .void).ir.json"
+          done
+      - uses: actions/upload-artifact@v4
+        with:
+          name: billing-ir
+          path: dist-ir/
+
+  deploy:
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    environment: billing # gate with required reviewers / protection rules
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm build
+      - name: Deploy billing configs
+        run: scripts/billing-ci.sh deploy
+        env:
+          VOID_ENDPOINT: ${{ vars.VOID_ENDPOINT }} # e.g. https://billing.internal/v1/deploy
+          VOID_TOKEN: ${{ secrets.VOID_TOKEN }}
+
+      # TypeScript configs (defineBilling) deploy the same way — the SDK
+      # compiles to the identical checksummed IR. Uncomment and point at a
+      # small script that calls `billing.connect({...}).deploy()`:
+      #
+      # - name: Deploy TypeScript billing config
+      #   run: node scripts/deploy-billing.mjs
+      #   env:
+      #     VOID_ENDPOINT: ${{ vars.VOID_ENDPOINT }}
+      #     VOID_TOKEN: ${{ secrets.VOID_TOKEN }}

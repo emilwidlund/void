@@ -1,8 +1,9 @@
 {
-  "name": "@void/server",
+  "name": "@void/proxy",
   "version": "0.0.1",
   "type": "module",
   "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
   "files": [
     "dist"
   ],
@@ -10,13 +11,13 @@
     "build": "tsc -p tsconfig.build.json",
     "typecheck": "tsc -p tsconfig.json",
     "test": "vitest run",
-    "dev": "tsx src/main.ts",
-    "simulate": "tsx scripts/simulate.ts"
+    "dev": "tsx src/main.ts"
   },
   "dependencies": {
     "@effect/platform": "^0.97.1",
     "@effect/platform-node": "^0.108.1",
     "@void/compiler": "workspace:*",
+    "@void/server": "workspace:*",
     "effect": "^3.22.1"
   },
   "devDependencies": {
@@ -25,6 +26,5 @@
     "tsx": "^4.20.0",
     "typescript": "^5.9.0",
     "vitest": "^3.2.0"
-  },
-  "types": "./dist/index.d.ts"
+  }
 }

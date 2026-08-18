@@ -53,9 +53,7 @@ product pro {
     included 10_000
   }
 
-  outcome ticket_resolution { 
-    per_unit 2 USD
-  }
+  outcome ticket_resolution { per_unit 2 USD }
 }
 
 # A negotiated deal as config: these prices and entitlements replace the

@@ -1,0 +1,24 @@
+# One-command hosting for the void proxy:
+#
+#   docker compose -f packages/proxy/docker-compose.yml up -d
+#
+# Point your app at http://localhost:4010 — same API as the parent server,
+# but entitlement/enforcement checks are answered locally and events are
+# journaled to the volume and forwarded upstream when it's reachable.
+services:
+  void-proxy:
+    build:
+      context: ../..
+      dockerfile: packages/proxy/Dockerfile
+    ports:
+      - "4010:4010"
+    environment:
+      VOID_UPSTREAM: ${VOID_UPSTREAM:-http://host.docker.internal:4000}
+      VOID_TOKEN: ${VOID_TOKEN:-}
+      VOID_SYNC_INTERVAL_MS: "5000"
+    volumes:
+      - void-proxy-data:/data
+    restart: unless-stopped
+
+volumes:
+  void-proxy-data:
