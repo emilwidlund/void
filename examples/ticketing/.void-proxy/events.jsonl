@@ -1,3 +1,6 @@
 [{"name":"ticket.opened","external_customer_id":"acme","properties":{"ticket_id":"acme-1"},"timestamp":"2026-08-17T09:01:43.157Z"}]
 [{"name":"agent.reply","external_customer_id":"acme","_cost":{"amount":0.004768,"currency":"USD"},"properties":{"ticket_id":"acme-1","tokens":1192},"timestamp":"2026-08-17T09:01:43.787Z"}]
 [{"name":"ticket.closed","external_customer_id":"acme","properties":{"ticket_id":"acme-1","resolution":"solved"},"timestamp":"2026-08-17T09:01:43.810Z"}]
+[{"name":"ticket.opened","external_customer_id":"acme","properties":{"ticket_id":"acme-1"},"timestamp":"2026-08-25T14:24:02.261Z"}]
+[{"name":"agent.reply","external_customer_id":"acme","_cost":{"amount":0.0014,"currency":"USD"},"properties":{"ticket_id":"acme-1","tokens":350},"timestamp":"2026-08-25T14:24:05.638Z"}]
+[{"name":"ticket.closed","external_customer_id":"acme","properties":{"ticket_id":"acme-1","resolution":"solved"},"timestamp":"2026-08-25T14:24:08.483Z"}]

@@ -4,7 +4,8 @@
   "private": true,
   "type": "module",
   "dependencies": {
-    "@void/sdk": "workspace:*"
+    "@void/sdk": "workspace:*",
+    "ai": "^7.0.79"
   },
   "scripts": {
     "typecheck": "tsc -p tsconfig.json"

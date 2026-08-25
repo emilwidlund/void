@@ -13,9 +13,9 @@
  *    margin floor is *proven* when this module loads
  *  - acme has a negotiated deal, held to the same invariants
  */
-import { defineBilling, on, usd } from "@void/sdk"
+import { defineConfig, on, usd } from "@void/sdk"
 
-export const billing = defineBilling({
+export const billing = defineConfig({
   meters: {
     agent_replies: {
       filter: on("agent.reply"),

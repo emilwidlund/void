@@ -4,6 +4,16 @@
   "type": "module",
   "main": "./dist/index.js",
   "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "default": "./dist/index.js"
+    },
+    "./ai": {
+      "types": "./dist/ai.d.ts",
+      "default": "./dist/ai.js"
+    }
+  },
   "files": [
     "dist"
   ],
@@ -13,12 +23,22 @@
     "test": "vitest run"
   },
   "dependencies": {
+    "@ai-sdk/provider": "^4.0.8",
     "@void/compiler": "workspace:*"
+  },
+  "peerDependencies": {
+    "ai": ">=7.0.0"
+  },
+  "peerDependenciesMeta": {
+    "ai": {
+      "optional": true
+    }
   },
   "devDependencies": {
     "@types/node": "^24.0.0",
+    "ai": "^7.0.79",
+    "effect": "^3.22.1",
     "typescript": "^5.9.0",
-    "vitest": "^3.2.0",
-    "effect": "^3.22.1"
+    "vitest": "^3.2.0"
   }
 }

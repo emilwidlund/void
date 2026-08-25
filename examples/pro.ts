@@ -1,19 +1,19 @@
 /**
  * The Pro plan as code — void's TypeScript frontend, now real.
  *
- * `defineBilling` compiles this config to the exact same checksummed IR as
+ * `defineConfig` compiles this config to the exact same checksummed IR as
  * `pro.void` (see @void/sdk's tests, which assert byte-identical output), so
  * `.void` files and `.ts` configs share one deploy pipeline. Static
  * invariants are proven at definition time: an override priced below a
- * declared floor makes `defineBilling` throw before anything deploys.
+ * declared floor makes `defineConfig` throw before anything deploys.
  *
  * Run it against a local server (`pnpm dev`) with:
  *   pnpm --filter @void/sdk build && node --input-type=module -e "..."
  * or import it from any app in the workspace.
  */
-import { defineBilling, money, on, usd, usdCents } from "@void/sdk"
+import { defineConfig, money, on, usd, usdCents } from "@void/sdk"
 
-const billing = defineBilling({
+const billing = defineConfig({
   meters: {
     api_calls: {
       filter: on("api.request"),
@@ -70,7 +70,7 @@ const billing = defineBilling({
   },
 
   invariants: [
-    // Meter-scoped assertions are proven when defineBilling runs — a config
+    // Meter-scoped assertions are proven when defineConfig runs — a config
     // (or a negotiated override) that breaks them throws.
     { name: "compute stays profitable", assert: { margin: "compute_seconds", gte: "40%" } },
     { name: "API price floor", assert: { price: "api_calls", gte: usdCents(5) }, else: "warn" },

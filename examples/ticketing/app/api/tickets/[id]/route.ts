@@ -56,10 +56,14 @@ export async function POST(
   }
 
   // action === "agent": entitlement-gated AI reply with cost reporting.
-  if (!(await voidClient.allowed(customer, "ai_agent"))) {
+  // One fetch answers both gates; the checks themselves are sync.
+  const entitlements = await voidClient.entitlements(customer)
+
+
+  if (!entitlements.allowed("ai_agent")) {
     return NextResponse.json({ error: "AI agent not in this plan" }, { status: 402 })
   }
-  if (!(await voidClient.allowed(customer, "reply_quota"))) {
+  if (!entitlements.allowed("reply_quota")) {
     return NextResponse.json(
       { error: "monthly AI reply quota exhausted" },
       { status: 402 }

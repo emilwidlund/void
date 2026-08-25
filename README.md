@@ -174,15 +174,17 @@ non-2xx response exits 1, so it drops straight into a CI/CD pipeline.
 
 ## TypeScript SDK
 
-`.void` files aren't the only frontend: `@void/sdk`'s `defineBilling` takes a
+`.void` files aren't the only frontend: `@void/sdk`'s `defineConfig` takes a
 fully typed config object and compiles it to **byte-identical IR** (and
 therefore the same deploy checksum) as the DSL — the two coexist in one
-pipeline. See `examples/pro.ts` for the full Pro plan as code.
+pipeline. The config is the customer state of record — entitlements, meters,
+usage — with billing derived from it. See `examples/pro.ts` for the full Pro
+plan as code.
 
 ```ts
-import { defineBilling, on, usd, usdCents } from "@void/sdk"
+import { defineConfig, on, usd, usdCents } from "@void/sdk"
 
-const billing = defineBilling({
+const billing = defineConfig({
   meters: {
     api_calls: { filter: on("api.request"), aggregate: "count", unit: "scalar" },
     ticket_resolution: {
@@ -215,9 +217,38 @@ await client.allowed("acme", "api_quota") // entitlement ids are literal types
 
 References are `keyof`-checked (pricing a typo'd meter is a compile error),
 values are literal-typed (`"60%"`, `"7 days"`), and static invariants are
-proven when `defineBilling` runs — a customer override priced below a
+proven when `defineConfig` runs — a customer override priced below a
 declared floor throws before anything deploys, with `else: "warn"` violations
 collected on `billing.warnings` instead.
+
+### AI usage (`@void/sdk/ai`)
+
+AI is first class: declare an `ai` section in the config and wrap any
+[Vercel AI SDK](https://ai-sdk.dev) model — AI Gateway models included — with
+`metered`. Every `generateText` / `streamText` call then lands on the
+customer's record with token counts as properties and the cost of serving it
+attached as `_cost`, automatically (gateway-reported cost when present, else
+the config's `ai.pricing` rates). Requires the optional `ai` peer dependency;
+see `examples/void.ts` for the full walkthrough.
+
+```ts
+const config = defineConfig({
+  meters: { ai_tokens: { filter: on("ai.generation"), aggregate: { sum: "total_tokens" } } },
+  //                     ^ the ai event's meters autocomplete the emitted keys
+  ai: { event: "ai.generation", pricing: modelPricing({ "openai/gpt-4o": { input: usd(2.5), output: usd(10) } }) },
+  //           ^ declared events              ^ AI Gateway model ids autocomplete
+  products: { pro: { name: "Pro", usage: { ai_tokens: { margin: "40%" } } } },
+})
+
+const voidClient = config.connect({ endpoint })
+const model = metered(gateway("openai/gpt-4o"), { client: voidClient })
+
+await generateText({
+  model,
+  prompt,
+  providerOptions: { void: voidOptions({ customer: "acme" }) },
+})
+```
 
 ## Workspace
 
@@ -225,7 +256,7 @@ collected on `billing.warnings` instead.
 | --- | --- |
 | `@void/compiler` | Lexer → parser → checker → IR emitter, span-based diagnostics, IR schema. Built on [Effect](https://effect.website). |
 | `@void/cli` | `void` CLI (`init`, `check`, `build`, `deploy`, `fmt`) built on `@effect/cli`. |
-| `@void/sdk` | TypeScript frontend: `defineBilling` compiles typed config to the same IR and returns a typed client (deploy, track, entitlements). |
+| `@void/sdk` | TypeScript frontend: `defineConfig` compiles typed config to the same IR and returns a typed client (deploy, track, entitlements). `@void/sdk/ai` meters Vercel AI SDK models with automatic `_cost`. |
 | `@void/lsp` | Language server: live diagnostics, completion, go-to-definition, hover. |
 | `@void/proxy` | Merchant-side sidecar: local entitlement/enforcement checks, durable store-and-forward to the parent server, pluggable persistence, Dockerized. |
 | `@void/server` | Void server: accepts deploys, ingests events, runs meter aggregation. |

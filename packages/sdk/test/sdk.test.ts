@@ -4,7 +4,7 @@ import { createServer } from "node:http"
 import type { AddressInfo } from "node:net"
 import { describe, expect, expectTypeOf, it } from "vitest"
 import type { EventNameOf } from "../src/index.js"
-import { defineBilling, gte, on, usd, usdCents } from "../src/index.js"
+import { defineConfig, gte, on, usd, usdCents } from "../src/index.js"
 
 // The same Pro plan, in both frontends. The assertion that matters: they
 // compile to byte-identical IR, and therefore the same deploy checksum.
@@ -59,7 +59,7 @@ override customer "acme" {
 }
 `
 
-const billing = defineBilling({
+const billing = defineConfig({
   meters: {
     api_calls: {
       filter: on("api.request"),
@@ -107,7 +107,7 @@ const billing = defineBilling({
   }
 })
 
-describe("defineBilling", () => {
+describe("defineConfig", () => {
   it("compiles to byte-identical IR and checksum as the .void frontend", () => {
     const fromDsl = Effect.runSync(compile(voidSource)).ir
     expect(JSON.stringify(billing.ir)).toBe(JSON.stringify(fromDsl))
@@ -141,7 +141,7 @@ describe("defineBilling", () => {
   })
 
   it("supports comparison matchers in filters", () => {
-    const config = defineBilling({
+    const config = defineConfig({
       meters: {
         errors: {
           filter: on("api.request", { status_code: gte(500) }),
@@ -161,7 +161,7 @@ describe("defineBilling", () => {
 
   it("throws when a static invariant is violated — overrides included", () => {
     expect(() =>
-      defineBilling({
+      defineConfig({
         meters: { api_calls: { filter: on("api.request"), aggregate: "count" } },
         products: {
           pro: { name: "Pro", usage: { api_calls: { perUnit: usdCents(10) } } }
@@ -177,7 +177,7 @@ describe("defineBilling", () => {
   })
 
   it("collects warn-softened violations instead of throwing", () => {
-    const soft = defineBilling({
+    const soft = defineConfig({
       meters: { api_calls: { filter: on("api.request"), aggregate: "count" } },
       products: {
         cheap: { name: "Cheap", usage: { api_calls: { perUnit: usdCents(2) } } }
@@ -196,7 +196,7 @@ describe("defineBilling", () => {
 
   it("rejects margin pricing on outcomes and unknown usage keys at runtime", () => {
     expect(() =>
-      defineBilling({
+      defineConfig({
         meters: {
           o: { correlate: "id", steps: [on("done")] }
         },
@@ -244,7 +244,7 @@ describe("connect", () => {
       async (endpoint, requests) => {
         const client = billing.connect({ endpoint, token: "secret" })
         const deployed = await client.deploy()
-        expect(deployed).toEqual({ status: "accepted", version: 1 })
+        expect(deployed).toEqual({ status: "accepted", version: 1, changed: true })
         expect(requests[0]!.path).toBe("/v1/deploy")
         expect(requests[0]!.body).toMatchObject({ checksum: billing.checksum })
 
@@ -291,11 +291,65 @@ describe("connect", () => {
     }
     await withServer(
       () => entitlements,
-      async (endpoint) => {
+      async (endpoint, requests) => {
         const client = billing.connect({ endpoint })
         expect(await client.allowed("acme", "sso")).toBe(true)
         expect(await client.allowed("acme", "api_quota")).toBe(false)
         expect(await client.allowed("acme", "seats")).toBe(false) // not granted
+
+        // fluent: chain a helper straight off the query, no parenthesized await
+        expect(await client.entitlements("acme").allowed("sso")).toBe(true)
+        expect(await client.entitlements("acme").remaining("api_quota")).toBe(0)
+
+        // or await once, sync gates on the snapshot
+        const acme = await client.entitlements("acme")
+        expect(acme.allowed("sso")).toBe(true)
+        expect(acme.allowed("api_quota")).toBe(false)
+        expect(acme.remaining("api_quota")).toBe(0)
+        expect(acme.remaining("sso")).toBeNull()
+        expect(acme.get("sso")).toMatchObject({ type: "flag" })
+        // helpers don't leak into the wire shape
+        expect(JSON.parse(JSON.stringify(acme))).toEqual(entitlements)
+
+        // a query is memoized: chained helpers share one fetch
+        const query = client.entitlements("acme")
+        const before = requests.length
+        await Promise.all([query.allowed("sso"), query.remaining("api_quota")])
+        expect(requests.length).toBe(before + 1)
+      }
+    )
+  })
+
+  it("attaches sync helpers to usage and ingest results", async () => {
+    await withServer(
+      (path) =>
+        path === "/v1/usage"
+          ? {
+              usage: [
+                { meter: "api_calls", customer: "acme", aggregation: "count", value: 7 },
+                { meter: "api_calls", customer: "globex", aggregation: "count", value: 3 },
+                { meter: "compute", customer: "acme", aggregation: "sum", value: 12.5 }
+              ]
+            }
+          : { ingested: 1, matched: { api_calls: 1 }, reversed: {}, cost_minor: 0 },
+      async (endpoint) => {
+        const client = billing.connect({ endpoint })
+
+        // fluent, single expression per question
+        expect(await client.usage().total("api_calls")).toBe(10)
+        expect(await client.usage().total("api_calls", "acme")).toBe(7)
+        expect(await client.usage().for("acme")).toHaveLength(2)
+
+        // or await the query for the rows + sync helpers
+        const usage = await client.usage()
+        expect(usage).toHaveLength(3) // still the plain array
+        expect(usage.meter("api_calls")).toHaveLength(2)
+        expect(usage.total("api_calls")).toBe(10)
+
+        expect(await client.track("api.request", { customer: "acme" }).matchedOn("api_calls")).toBe(1)
+        const result = await client.track("api.request", { customer: "acme" })
+        expect(result.matchedOn("compute")).toBe(0)
+        expect(result.reversedOn("api_calls")).toBe(0)
       }
     )
   })

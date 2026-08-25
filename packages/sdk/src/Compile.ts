@@ -13,7 +13,7 @@ import type {
 import { resolveUnit, shiftDecimal, unitFactor } from "@void/compiler"
 import { createHash } from "node:crypto"
 import type {
-  BillingConfigShape,
+  ConfigShape,
   EntitlementConfig,
   Filter,
   InvariantConfig,
@@ -27,13 +27,13 @@ import type {
 import { isComparison, isOutcomeConfig } from "./Config.js"
 
 /**
- * Compiles a `defineBilling` config into the same canonical IR the `.void`
+ * Compiles a `defineConfig` config into the same canonical IR the `.void`
  * compiler emits — identical key order, so both frontends produce identical
  * JSON and therefore identical deploy checksums.
  */
 
 const fail = (message: string): never => {
-  throw new Error(`defineBilling: ${message}`)
+  throw new Error(`defineConfig: ${message}`)
 }
 
 export const checksumIr = (ir: BillingIr): string =>
@@ -316,7 +316,7 @@ const verifyInvariants = (ir: BillingIr): { warnings: Array<string> } => {
     }
   }
   if (errors.length > 0) {
-    throw new Error(`defineBilling: config violates its invariants\n${errors.join("\n")}`)
+    throw new Error(`defineConfig: config violates its invariants\n${errors.join("\n")}`)
   }
   return { warnings }
 }
@@ -346,7 +346,7 @@ export const collectEventNames = (ir: BillingIr): ReadonlyArray<string> => {
   return [...names]
 }
 
-export const compileConfig = <C extends BillingConfigShape<C>>(
+export const compileConfig = <C extends ConfigShape<C>>(
   config: C
 ): { ir: BillingIr; checksum: string; warnings: ReadonlyArray<string> } => {
   const meterEntries = Object.entries(config.meters as Record<string, MeterConfig>)

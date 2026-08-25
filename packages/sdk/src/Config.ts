@@ -1,7 +1,8 @@
 /**
- * The typed configuration surface of `defineBilling` — the TypeScript
+ * The typed configuration surface of `defineConfig` — the TypeScript
  * frontend to void. Everything here compiles to the same checksummed IR as
- * `.void` files, so both frontends share one deploy pipeline.
+ * `.void` files, so both frontends share one deploy pipeline. The `ai`
+ * section is client-side behavior only and never enters the IR.
  */
 
 // ---------------------------------------------------------------------------
@@ -90,17 +91,18 @@ export const isComparison = (value: MatcherValue): value is Comparison =>
 // Meters (standard aggregations and outcome chains share one namespace)
 // ---------------------------------------------------------------------------
 
-export type AggregateSpec =
+/** `P` suggests known event property keys (e.g. what AI events carry). */
+export type AggregateSpec<P extends string = string> =
   | "count"
-  | { readonly sum: string }
-  | { readonly max: string }
-  | { readonly min: string }
-  | { readonly avg: string }
-  | { readonly unique: string }
+  | { readonly sum: Suggest<P> }
+  | { readonly max: Suggest<P> }
+  | { readonly min: Suggest<P> }
+  | { readonly avg: Suggest<P> }
+  | { readonly unique: Suggest<P> }
 
-export interface StandardMeterConfig {
+export interface StandardMeterConfig<P extends string = string> {
   readonly filter?: Filter
-  readonly aggregate: AggregateSpec
+  readonly aggregate: AggregateSpec<P>
   readonly unit?: UnitName
   /** correction rule: a matching event unwinds one prior charge */
   readonly reverseOn?: { readonly on: Filter; readonly within?: Span }
@@ -114,7 +116,9 @@ export interface OutcomeMeterConfig {
   readonly failOn?: { readonly on: Filter; readonly within?: Span }
 }
 
-export type MeterConfig = StandardMeterConfig | OutcomeMeterConfig
+export type MeterConfig<P extends string = string> =
+  | StandardMeterConfig<P>
+  | OutcomeMeterConfig
 
 export const isOutcomeConfig = (meter: MeterConfig): meter is OutcomeMeterConfig =>
   "correlate" in meter
@@ -182,6 +186,68 @@ export interface OverrideConfig<Id extends string = string> {
 }
 
 // ---------------------------------------------------------------------------
+// AI (client-side: how model calls turn into usage events — not part of the IR)
+// ---------------------------------------------------------------------------
+
+/** Per-million-token rates for one model. */
+export interface TokenPricing {
+  /** per 1M input tokens */
+  readonly input?: Money
+  /** per 1M output tokens */
+  readonly output?: Money
+  /** per 1M cached input tokens read; falls back to the `input` rate */
+  readonly cachedInput?: Money
+}
+
+/**
+ * Properties the `@void/sdk/ai` middleware attaches to every AI event —
+ * the keys AI-event meters can aggregate and filter on. Kept in sync by the
+ * middleware's return type.
+ */
+export type AiEventProperty =
+  | "model"
+  | "provider"
+  | "finish_reason"
+  | "streamed"
+  | "duration_ms"
+  | "input_tokens"
+  | "output_tokens"
+  | "total_tokens"
+  | "cached_input_tokens"
+  | "reasoning_tokens"
+
+/** The configured AI event, when the config declares one. */
+export type AiEventOf<C> = C extends { readonly ai: { readonly event: infer E } }
+  ? E & string
+  : never
+
+/**
+ * Every property key known to exist on the config's AI events: the automatic
+ * ones plus whatever `ai.properties` declares.
+ */
+export type AiPropertyKeysOf<C> =
+  | AiEventProperty
+  | (C extends { readonly ai: { readonly properties: infer P } }
+      ? keyof P & string
+      : never)
+
+/**
+ * First-class AI usage: models wrapped with `metered` from `@void/sdk/ai`
+ * inherit these defaults, so a call site needs nothing but the customer.
+ */
+export interface AiConfig<E extends string = string> {
+  /** event tracked for every model call */
+  readonly event?: Suggest<E>
+  /** extra properties attached to every AI event */
+  readonly properties?: Readonly<Record<string, string | number | boolean>>
+  /**
+   * Fallback cost rates keyed by model id ("openai/gpt-4o"), "*" as wildcard.
+   * Used when the provider (e.g. the Vercel AI Gateway) doesn't report cost.
+   */
+  readonly pricing?: Readonly<Record<string, TokenPricing>>
+}
+
+// ---------------------------------------------------------------------------
 // The whole config
 // ---------------------------------------------------------------------------
 
@@ -190,11 +256,30 @@ export type MeterIdOf<C> = C extends { readonly meters: infer M }
   ? keyof M & string
   : string
 
-export interface BillingConfigShape<C> {
-  readonly meters: Readonly<Record<string, MeterConfig>>
+/**
+ * A meter whose filter matches the config's AI event gets property-key
+ * suggestions for what those events actually carry; other meters are
+ * unconstrained (their events come from the app, unknown to the config).
+ */
+type MeterShapeFor<M, C> = [AiEventOf<C>] extends [never]
+  ? MeterConfig
+  : M extends { readonly filter: { readonly event?: infer E } }
+    ? E extends AiEventOf<C>
+      ? MeterConfig<AiPropertyKeysOf<C>>
+      : MeterConfig
+    : MeterConfig
+
+type MetersShapeOf<C> = C extends { readonly meters: infer M }
+  ? { readonly [K in keyof M]: MeterShapeFor<M[K], C> }
+  : Readonly<Record<string, MeterConfig>>
+
+export interface ConfigShape<C> {
+  readonly meters: MetersShapeOf<C>
   readonly products: Readonly<Record<string, ProductConfig<MeterIdOf<C>>>>
   readonly invariants?: ReadonlyArray<InvariantConfig<MeterIdOf<C>>>
   readonly overrides?: Readonly<Record<string, OverrideConfig<MeterIdOf<C>>>>
+  /** client-side AI defaults; excluded from the IR and the deploy checksum */
+  readonly ai?: AiConfig<DeclaredEventsOf<C>>
 }
 
 export type ProductIdOf<C> = C extends { readonly products: infer P }
@@ -218,13 +303,19 @@ type EventsOfMeter<M> =
   | (M extends { readonly steps: ReadonlyArray<infer F> } ? EventOfFilter<F> : never)
   | (M extends { readonly failOn: { readonly on: infer F } } ? EventOfFilter<F> : never)
 
-/**
- * Every event name the config mentions — meter filters, correction rules,
- * outcome steps and fail conditions. Powers `track()` autocomplete.
- */
-export type EventNameOf<C> = C extends { readonly meters: infer M }
+/** Event names mentioned by meters — filters, corrections, outcome steps. */
+export type DeclaredEventsOf<C> = C extends { readonly meters: infer M }
   ? { [K in keyof M]: EventsOfMeter<M[K]> }[keyof M] & string
   : string
+
+/**
+ * Every event name the config mentions — meter filters, correction rules,
+ * outcome steps, fail conditions and the `ai` section's event. Powers
+ * `track()` autocomplete.
+ */
+export type EventNameOf<C> =
+  | DeclaredEventsOf<C>
+  | (C extends { readonly ai: { readonly event: infer E } } ? E & string : never)
 
 /** Every entitlement id granted by any product or override in the config. */
 export type EntitlementIdOf<C> = C extends {

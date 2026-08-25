@@ -3,7 +3,7 @@ import type { ClientOptions, VoidClient } from "./Client.js"
 import { createClient } from "./Client.js"
 import { collectEventNames, compileConfig } from "./Compile.js"
 import type {
-  BillingConfigShape,
+  ConfigShape,
   EntitlementIdOf,
   EventNameOf,
   MeterIdOf,
@@ -14,8 +14,8 @@ export * from "./Client.js"
 export { checksumIr } from "./Compile.js"
 export * from "./Config.js"
 
-/** What `defineBilling` returns: the compiled artifact plus a typed client factory. */
-export interface Billing<C> {
+/** What `defineConfig` returns: the compiled artifact plus a typed client factory. */
+export interface VoidConfig<C> {
   readonly config: C
   /** the canonical IR — byte-identical to what the `.void` compiler emits */
   readonly ir: BillingIr
@@ -35,15 +35,20 @@ export interface Billing<C> {
 }
 
 /**
- * The TypeScript frontend to void. Compiles the config to the same
- * checksummed IR as `.void` files (throwing when a static invariant is
- * violated — negotiated overrides included) and returns a client whose
- * meter, product and entitlement ids are literal types.
+ * The TypeScript frontend to void: your customers' state — entitlements,
+ * meters, usage — as one typed config, with billing derived from it as a
+ * side effect. Compiles to the same checksummed IR as `.void` files
+ * (throwing when a static invariant is violated — negotiated overrides
+ * included) and returns a client whose meter, product and entitlement ids
+ * are literal types. The `ai` section flows into connected clients as the
+ * defaults for models wrapped with `metered` from `@void/sdk/ai`.
  */
-export const defineBilling = <const C extends BillingConfigShape<C>>(
+export const defineConfig = <const C extends ConfigShape<C>>(
   config: C
-): Billing<C> => {
+): VoidConfig<C> => {
   const { checksum, ir, warnings } = compileConfig(config)
+  const declared = collectEventNames(ir)
+  const aiEvent = config.ai?.event
   return {
     config,
     ir,
@@ -51,7 +56,9 @@ export const defineBilling = <const C extends BillingConfigShape<C>>(
     warnings,
     meters: Object.keys(config.meters) as Array<MeterIdOf<C>>,
     products: Object.keys(config.products) as Array<ProductIdOf<C>>,
-    events: collectEventNames(ir) as Array<EventNameOf<C>>,
-    connect: (options) => createClient(ir, checksum, options)
+    events: (aiEvent !== undefined && !declared.includes(aiEvent)
+      ? [...declared, aiEvent]
+      : declared) as Array<EventNameOf<C>>,
+    connect: (options) => createClient(ir, checksum, options, config.ai)
   }
 }
