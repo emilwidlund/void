@@ -1,6 +1,6 @@
 import { NextResponse } from "next/server"
 import { listTickets } from "../../../lib/tickets"
-import { proxyHealth, voidClient } from "../../../lib/void"
+import { proxyHealth, voidClient } from "../../../void"
 
 export const dynamic = "force-dynamic"
 

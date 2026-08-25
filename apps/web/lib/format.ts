@@ -20,7 +20,12 @@ const SYMBOLS: Readonly<Record<string, string>> = { USD: "$", EUR: "€", GBP: "
 export const formatMoney = (money: IrMoney): string => {
   const major = Number(money.amount) / 100
   const symbol = SYMBOLS[money.currency]
-  const digits = major > 0 && major < 0.01 ? 6 : 2
+  // Sub-cent amounts (per-token rates) keep two significant digits instead
+  // of rounding to $0.00.
+  const digits =
+    major > 0 && major < 0.01
+      ? Math.min(10, 1 - Math.floor(Math.log10(major)))
+      : 2
   const rendered = major.toLocaleString("en-US", {
     minimumFractionDigits: 2,
     maximumFractionDigits: digits

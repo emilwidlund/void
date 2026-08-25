@@ -2,36 +2,10 @@ import type { LanguageModelV4StreamPart } from "@ai-sdk/provider"
 import { generateText, simulateReadableStream, streamText } from "ai"
 import { MockLanguageModelV4 } from "ai/test"
 import { beforeEach, describe, expect, expectTypeOf, it, vi } from "vitest"
+import type { AiLogEvent, MeteredOptions } from "../src/ai.js"
 import { metered, modelPricing, voidOptions } from "../src/ai.js"
-import type {
-  AiEventOf,
-  AiPropertyKeysOf,
-  ConfigShape,
-  EventNameOf,
-  MeterConfig
-} from "../src/index.js"
+import type { EventNameOf, MeterIdOf } from "../src/index.js"
 import { defineConfig, on, usd } from "../src/index.js"
-
-const config = defineConfig({
-  meters: {
-    ai_tokens: {
-      filter: on("ai.generation"),
-      aggregate: { sum: "total_tokens" }
-    }
-  },
-  products: {
-    pro: {
-      name: "Pro",
-      usage: { ai_tokens: { margin: "30%" } }
-    }
-  },
-  // first-class AI: wrapped models inherit these defaults
-  ai: {
-    event: "ai.generation",
-    properties: { source: "assistant" },
-    pricing: modelPricing({ "gpt-4o": { input: usd(2.5), output: usd(10) } })
-  }
-})
 
 /** Wire-level capture of everything the void client sends. */
 interface SentEvent {
@@ -53,7 +27,26 @@ const stubFetch = (async (_url: unknown, init?: { body?: unknown }) => {
   )
 }) as typeof fetch
 
-const voidClient = config.connect({ endpoint: "http://proxy", fetch: stubFetch })
+/** An assistant declared as a meter, wired to a mock model. */
+const connect = (model: MockLanguageModelV4, options?: MeteredOptions) => {
+  const config = defineConfig({
+    meters: {
+      assistant: metered(model, options),
+      requests: { filter: on("ai.assistant"), aggregate: "count" }
+    },
+    products: {
+      pro: {
+        name: "Pro",
+        entitlements: { quota: { meter: "requests", limit: 100 } },
+        usage: {
+          "assistant.input_tokens": { perUnit: usd(0.0000035) },
+          "assistant.output_tokens": { perUnit: usd(0.0000105) }
+        }
+      }
+    }
+  })
+  return config.connect({ endpoint: "http://proxy", fetch: stubFetch })
+}
 
 beforeEach(() => {
   sent = []
@@ -75,80 +68,69 @@ const generateResult = (providerMetadata?: Record<string, Record<string, unknown
   warnings: []
 })
 
-describe("ai config inference", () => {
-  it("derives the ai event, its property keys, and track() autocomplete from the config", () => {
-    type C = typeof config.config
-
-    expectTypeOf<AiEventOf<C>>().toEqualTypeOf<"ai.generation">()
-    // automatic middleware properties plus the declared `ai.properties` keys
-    expectTypeOf<"total_tokens">().toExtend<AiPropertyKeysOf<C>>()
-    expectTypeOf<"input_tokens">().toExtend<AiPropertyKeysOf<C>>()
-    expectTypeOf<"source">().toExtend<AiPropertyKeysOf<C>>()
-
-    // meters filtering on the ai event get its property keys; others don't
-    type Meters = ConfigShape<C>["meters"]
-    expectTypeOf<Meters["ai_tokens"]>().toEqualTypeOf<
-      MeterConfig<AiPropertyKeysOf<C>>
-    >()
-
-    // an ai event not mentioned by any meter still reaches EventNameOf/events
-    const embeddings = defineConfig({
-      meters: { calls: { filter: on("api.request"), aggregate: "count" } },
-      products: {},
-      ai: { event: "ai.embedding" }
+describe("metered meters", () => {
+  it("expands to one meter per token class — never a total_tokens default", () => {
+    const config = defineConfig({
+      meters: { assistant: metered(new MockLanguageModelV4({})) },
+      products: {}
     })
-    expectTypeOf<EventNameOf<typeof embeddings.config>>().toExtend<
-      "api.request" | "ai.embedding"
-    >()
-    expect(embeddings.events).toContain("ai.embedding")
+    // the IR canonicalizes property paths under `event.` — same as the DSL
+    expect(config.ir.meters.map((m) => [m.id, m.aggregation])).toEqual([
+      ["assistant.input_tokens", { type: "sum", property: "event.input_tokens" }],
+      [
+        "assistant.cached_input_tokens",
+        { type: "sum", property: "event.cached_input_tokens" }
+      ],
+      ["assistant.output_tokens", { type: "sum", property: "event.output_tokens" }]
+    ])
+    // all three filter on the event derived from the meter key
+    expect(
+      config.ir.meters.every((m) => JSON.stringify(m.filter).includes("ai.assistant"))
+    ).toBe(true)
+    expect(config.meters).toEqual([
+      "assistant.input_tokens",
+      "assistant.cached_input_tokens",
+      "assistant.output_tokens"
+    ])
+    expect(config.events).toContain("ai.assistant")
 
-    // the connected client carries the section (defaults for `metered`)
-    expect(voidClient.ai?.event).toBe("ai.generation")
+    type C = typeof config.config
+    expectTypeOf<"assistant.output_tokens">().toExtend<MeterIdOf<C>>()
+    expectTypeOf<"ai.assistant">().toExtend<EventNameOf<C>>()
+  })
+
+  it("an explicit aggregate compiles to a single meter under the plain key", () => {
+    const config = defineConfig({
+      meters: {
+        assistant: metered(new MockLanguageModelV4({}), {
+          event: "chat.completed",
+          aggregate: "count"
+        })
+      },
+      products: { pro: { name: "Pro", usage: { assistant: { perUnit: usd(0.01) } } } }
+    })
+    expect(config.ir.meters.map((m) => [m.id, m.aggregation])).toEqual([
+      ["assistant", { type: "count" }]
+    ])
+    expect(config.events).toContain("chat.completed")
+
+    type C = typeof config.config
+    expectTypeOf<"assistant">().toExtend<MeterIdOf<C>>()
+    expectTypeOf<"chat.completed">().toExtend<EventNameOf<C>>()
   })
 })
 
-describe("metered · generate", () => {
-  it("inherits event, properties and pricing from the config's ai section", async () => {
-    const model = metered(
-      new MockLanguageModelV4({
-        provider: "openai",
-        modelId: "gpt-4o",
-        doGenerate: generateResult()
-      }),
-      { client: voidClient } // nothing else — defaults come from defineConfig
-    )
-    await generateText({
-      model,
-      prompt: "hi",
-      providerOptions: { void: voidOptions({ customer: "acme" }) }
-    })
-
-    expect(sent).toHaveLength(1)
-    const event = sent[0]!
-    expect(event.name).toBe("ai.generation")
-    expect(event.external_customer_id).toBe("acme")
-    expect(event.properties).toMatchObject({ source: "assistant", total_tokens: 1500 })
-    // 1000/1M * $2.50 + 500/1M * $10, from ai.pricing
-    expect(event._cost!.amount).toBeCloseTo(0.0075, 10)
-  })
-
-  it("requires an event from the config or the options", () => {
-    const bare = { track: () => Promise.resolve({}) }
-    expect(() => metered(new MockLanguageModelV4({}), { client: bare })).toThrow(
-      /no event to track/
-    )
-  })
-
-  it("tracks token properties and prefers the gateway-reported cost", async () => {
+describe("client.ai · generate", () => {
+  it("exposes the bound model and tracks the derived event with token properties", async () => {
     const mock = new MockLanguageModelV4({
       provider: "gateway",
       modelId: "openai/gpt-4o",
       doGenerate: generateResult({ gateway: { cost: "0.0125", generationId: "gen_1" } })
     })
-    const model = metered(mock, { client: voidClient })
+    const client = connect(mock)
 
     const result = await generateText({
-      model,
+      model: client.ai.assistant,
       prompt: "hi",
       providerOptions: {
         void: voidOptions({ customer: "acme", properties: { ticket_id: "T-1" } })
@@ -156,7 +138,10 @@ describe("metered · generate", () => {
     })
     expect(result.text).toBe("hello")
 
+    expect(sent).toHaveLength(1)
     const event = sent[0]!
+    expect(event.name).toBe("ai.assistant") // derived from the meter key
+    expect(event.external_customer_id).toBe("acme")
     expect(event.properties).toMatchObject({
       model: "openai/gpt-4o",
       provider: "gateway",
@@ -173,51 +158,121 @@ describe("metered · generate", () => {
     expect(mock.doGenerateCalls[0]!.providerOptions).toEqual({})
   })
 
+  it("falls back to the pricing table when the gateway reports no cost", async () => {
+    const client = connect(
+      new MockLanguageModelV4({
+        provider: "openai",
+        modelId: "gpt-4o",
+        doGenerate: generateResult()
+      }),
+      {
+        customer: "globex",
+        pricing: modelPricing({ "gpt-4o": { input: usd(2.5), output: usd(10) } })
+      }
+    )
+    await generateText({ model: client.ai.assistant, prompt: "hi" })
+
+    const event = sent[0]!
+    expect(event.external_customer_id).toBe("globex")
+    // 1000/1M * $2.50 + 500/1M * $10
+    expect(event._cost!.amount).toBeCloseTo(0.0075, 10)
+    expect(event._cost!.currency).toBe("USD")
+  })
+
   it("prefers a custom cost resolver and supports per-call event override", async () => {
-    const model = metered(
+    const client = connect(
       new MockLanguageModelV4({
         provider: "gateway",
         modelId: "openai/gpt-4o",
         doGenerate: generateResult({ gateway: { cost: "0.0125" } })
       }),
-      {
-        client: voidClient,
-        customer: "globex",
-        cost: (info) => usd((info.usage.totalTokens ?? 0) * 0.00001)
-      }
+      { cost: (info) => usd((info.usage.totalTokens ?? 0) * 0.00001) }
     )
     await generateText({
-      model,
+      model: client.ai.assistant,
       prompt: "hi",
-      providerOptions: { void: voidOptions({ event: "ai.custom" }) }
+      providerOptions: { void: voidOptions({ event: "ai.custom", customer: "acme" }) }
     })
     expect(sent[0]!.name).toBe("ai.custom")
-    expect(sent[0]!.external_customer_id).toBe("globex")
     expect(sent[0]!._cost!.amount).toBeCloseTo(0.015, 10)
+  })
+
+  it("emits the full lifecycle through the log sink", async () => {
+    const logged: Array<AiLogEvent> = []
+    const client = connect(
+      new MockLanguageModelV4({
+        provider: "openai",
+        modelId: "gpt-4o",
+        doGenerate: generateResult()
+      }),
+      {
+        pricing: modelPricing({ "gpt-4o": { input: usd(2.5), output: usd(10) } }),
+        log: (entry) => logged.push(entry)
+      }
+    )
+
+    await generateText({
+      model: client.ai.assistant,
+      prompt: "hi there",
+      providerOptions: { void: voidOptions({ customer: "acme" }) }
+    })
+    expect(logged.map((entry) => entry.type)).toEqual(["call", "finish", "cost", "track"])
+    expect(logged[0]).toMatchObject({
+      type: "call",
+      event: "ai.assistant",
+      model: "gpt-4o",
+      provider: "openai",
+      streamed: false,
+      prompt: "hi there",
+      customer: "acme"
+    })
+    expect(logged[1]).toMatchObject({
+      type: "finish",
+      info: { usage: { inputTokens: 1000, outputTokens: 500 } }
+    })
+    expect(logged[2]).toMatchObject({ type: "cost", source: "pricing" })
+    expect(logged[3]).toMatchObject({
+      type: "track",
+      customer: "acme",
+      properties: { total_tokens: 1500 }
+    })
+
+    // opting out logs a skip; a tracking failure logs an error
+    logged.length = 0
+    await generateText({
+      model: client.ai.assistant,
+      prompt: "hi",
+      providerOptions: { void: voidOptions({ track: false }) }
+    })
+    expect(logged.map((entry) => entry.type)).toEqual(["call", "skip"])
+
+    logged.length = 0
+    failTracking = true
+    await generateText({ model: client.ai.assistant, prompt: "hi" })
+    expect(logged.map((entry) => entry.type)).toEqual(["call", "finish", "cost", "error"])
   })
 
   it("skips tracking when the call opts out, and never breaks the model call on track errors", async () => {
     const errors: Array<unknown> = []
-    const model = metered(new MockLanguageModelV4({ doGenerate: generateResult() }), {
-      client: voidClient,
+    const client = connect(new MockLanguageModelV4({ doGenerate: generateResult() }), {
       onTrackError: (e) => errors.push(e)
     })
 
     await generateText({
-      model,
+      model: client.ai.assistant,
       prompt: "hi",
       providerOptions: { void: voidOptions({ track: false }) }
     })
     expect(sent).toHaveLength(0)
 
     failTracking = true
-    const result = await generateText({ model, prompt: "hi" })
+    const result = await generateText({ model: client.ai.assistant, prompt: "hi" })
     expect(result.text).toBe("hello")
     expect(errors).toHaveLength(1)
   })
 })
 
-describe("metered · stream", () => {
+describe("client.ai · stream", () => {
   it("tracks once the stream finishes, from the finish part's usage and metadata", async () => {
     const parts: Array<LanguageModelV4StreamPart> = [
       { type: "stream-start", warnings: [] },
@@ -233,17 +288,16 @@ describe("metered · stream", () => {
         providerMetadata: { gateway: { cost: "0.002" } }
       }
     ]
-    const model = metered(
+    const client = connect(
       new MockLanguageModelV4({
         provider: "gateway",
         modelId: "openai/gpt-4o",
         doStream: { stream: simulateReadableStream({ chunks: parts }) }
-      }),
-      { client: voidClient }
+      })
     )
 
     const result = streamText({
-      model,
+      model: client.ai.assistant,
       prompt: "hi",
       providerOptions: { void: voidOptions({ customer: "acme" }) }
     })
@@ -251,6 +305,7 @@ describe("metered · stream", () => {
 
     await vi.waitFor(() => expect(sent).toHaveLength(1))
     const event = sent[0]!
+    expect(event.name).toBe("ai.assistant")
     expect(event.external_customer_id).toBe("acme")
     expect(event.properties).toMatchObject({
       model: "openai/gpt-4o-2024-11-20", // response metadata wins over the wrapped id

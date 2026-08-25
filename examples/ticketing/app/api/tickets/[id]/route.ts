@@ -1,26 +1,18 @@
+import { voidOptions } from "@void/sdk/ai"
+import { generateText } from "ai"
 import { NextResponse } from "next/server"
 import { getTicket } from "../../../../lib/tickets"
-import { voidClient } from "../../../../lib/void"
-import { usd } from "@void/sdk"
+import { voidClient } from "../../../../void"
 
 export const dynamic = "force-dynamic"
-
-const AGENT_REPLIES = [
-  "I've looked into this — the issue was a stale cache entry. Cleared it; can you retry?",
-  "This is a known regression in the last deploy. I've rolled back the config for your workspace.",
-  "Your API key had expired scopes. I've re-issued it with the correct permissions.",
-  "The webhook endpoint was returning 410 — I've re-registered it and replayed the failed deliveries.",
-]
-
-/** Cost of one simulated model call: ~$4 per million tokens. */
-const COST_PER_TOKEN = 0.000004
 
 /**
  * Ticket actions. Every one maps to a billing event:
  *   close (solved)  -> completes the ticket_resolution outcome (+$1.50/$1)
  *   reopen          -> fails the chain, unwinding that ticket's charge
- *   agent           -> agent.reply with token count and `_cost` attached,
- *                      gated on the ai_agent flag and the reply quota
+ *   agent           -> a real model call through `voidClient.ai.agent`, which
+ *                      tracks `ai.agent` with token counts and `_cost` under
+ *                      the hood — gated on the ai_agent flag and the quota
  */
 export async function POST(
   request: Request,
@@ -55,11 +47,9 @@ export async function POST(
     return NextResponse.json({ ticket })
   }
 
-  // action === "agent": entitlement-gated AI reply with cost reporting.
+  // action === "agent": entitlement-gated AI reply.
   // One fetch answers both gates; the checks themselves are sync.
   const entitlements = await voidClient.entitlements(customer)
-
-
   if (!entitlements.allowed("ai_agent")) {
     return NextResponse.json({ error: "AI agent not in this plan" }, { status: 402 })
   }
@@ -70,13 +60,22 @@ export async function POST(
     )
   }
 
-  const text = AGENT_REPLIES[Math.floor(Math.random() * AGENT_REPLIES.length)]!
-  const tokens = 300 + Math.floor(Math.random() * 900)
-  ticket.messages.push({ from: "agent", text, tokens })
-  await voidClient.track("agent.reply", {
-    customer,
-    properties: { ticket_id: ticket.id, tokens },
-    cost: usd(tokens * COST_PER_TOKEN), // billed to the customer at 70% margin
+  // The model is already wrapped by the config's `agent` meter: this call
+  // tracks `ai.agent` with token counts and its `_cost` — no manual event.
+  const lastFromCustomer = [...ticket.messages]
+    .reverse()
+    .find((message) => message.from === "customer")
+  const { text, usage } = await generateText({
+    model: voidClient.ai.agent,
+    system:
+      "You are a support agent for a developer tool. Reply concisely with a concrete fix.",
+    prompt: `Ticket: ${ticket.subject}${
+      lastFromCustomer !== undefined ? `\nCustomer: ${lastFromCustomer.text}` : ""
+    }`,
+    providerOptions: {
+      void: voidOptions({ customer, properties: { ticket_id: ticket.id } }),
+    },
   })
+  ticket.messages.push({ from: "agent", text, tokens: usage.totalTokens })
   return NextResponse.json({ ticket })
 }

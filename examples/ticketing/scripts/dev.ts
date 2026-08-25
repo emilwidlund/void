@@ -5,7 +5,7 @@
  *
  *   1. parent void server   :4000  (the "hosted" billing backend)
  *   2. billing dashboard    :3001  (@void/web, pointed at the parent)
- *   3. deploys billing.ts to the parent (checksum-idempotent)
+ *   3. deploys void.ts to the parent (checksum-idempotent)
  *   4. void proxy           :4010  (merchant sidecar, journal in .void-proxy/)
  *   5. this ticketing app   :3005
  *
@@ -15,7 +15,7 @@ import { spawn, spawnSync, type ChildProcess } from "node:child_process"
 import { existsSync } from "node:fs"
 import { fileURLToPath } from "node:url"
 import { join } from "node:path"
-import { billing } from "../billing.js"
+import { config } from "../void.js"
 
 const here = fileURLToPath(new URL(".", import.meta.url))
 const repoRoot = join(here, "..", "..", "..")
@@ -82,8 +82,8 @@ start("dashboard", "pnpm", ["--filter", "@void/web", "dev"], {
 })
 
 // 3. Deploy this app's billing model (no-op when the checksum is active).
-const deployed = await billing.connect({ endpoint: PARENT }).deploy()
-log(`billing config deployed: ${deployed.status} (v${deployed.version}) ${billing.checksum}`)
+const deployed = await config.connect({ endpoint: PARENT }).deploy()
+log(`billing config deployed: ${deployed.status} (v${deployed.version}) ${config.checksum}`)
 
 // 4. The merchant-side proxy, journaling into the demo folder.
 start("void proxy", "node", ["packages/proxy/dist/main.js"], {

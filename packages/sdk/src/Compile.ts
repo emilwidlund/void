@@ -13,6 +13,7 @@ import type {
 import { resolveUnit, shiftDecimal, unitFactor } from "@void/compiler"
 import { createHash } from "node:crypto"
 import type {
+  AiMeterConfig,
   ConfigShape,
   EntitlementConfig,
   Filter,
@@ -24,7 +25,7 @@ import type {
   Span,
   UsagePricing
 } from "./Config.js"
-import { isComparison, isOutcomeConfig } from "./Config.js"
+import { isAiConfig, isComparison, isOutcomeConfig } from "./Config.js"
 
 /**
  * Compiles a `defineConfig` config into the same canonical IR the `.void`
@@ -346,10 +347,39 @@ export const collectEventNames = (ir: BillingIr): ReadonlyArray<string> => {
   return [...names]
 }
 
-export const compileConfig = <C extends ConfigShape<C>>(
-  config: C
+/** The usage event an AI meter tracks: declared, or derived from its key. */
+export const aiMeterEvent = (id: string, meter: AiMeterConfig): string =>
+  meter.event ?? `ai.${id}`
+
+/**
+ * AI meters compile to plain standard meters — the model and its binding are
+ * client-side only and never reach the IR or the deploy checksum. Without an
+ * explicit `aggregate` an AI meter expands to one meter per token class:
+ * input, cached input and output are almost always priced differently, so
+ * there is deliberately no single-sum default.
+ */
+const expandMeter = (
+  id: string,
+  meter: MeterConfig | AiMeterConfig
+): Array<[string, MeterConfig]> => {
+  if (!isAiConfig(meter)) return [[id, meter]]
+  const filter = { event: aiMeterEvent(id, meter) }
+  const unit = meter.unit !== undefined ? { unit: meter.unit } : {}
+  if (meter.aggregate !== undefined) {
+    return [[id, { filter, aggregate: meter.aggregate, ...unit }]]
+  }
+  return (["input_tokens", "cached_input_tokens", "output_tokens"] as const).map(
+    (property) => [`${id}.${property}`, { filter, aggregate: { sum: property }, ...unit }]
+  )
+}
+
+export const compileConfig = (
+  config: ConfigShape
 ): { ir: BillingIr; checksum: string; warnings: ReadonlyArray<string> } => {
-  const meterEntries = Object.entries(config.meters as Record<string, MeterConfig>)
+  const meters = Object.fromEntries(
+    Object.entries(config.meters).flatMap(([id, meter]) => expandMeter(id, meter))
+  ) as Record<string, MeterConfig>
+  const meterEntries = Object.entries(meters)
   const ir: BillingIr = {
     version: 1,
     meters: meterEntries
@@ -358,15 +388,13 @@ export const compileConfig = <C extends ConfigShape<C>>(
     outcomes: meterEntries
       .filter(([, meter]) => isOutcomeConfig(meter))
       .map(([id, meter]) => toIrOutcome(id, meter)),
-    products: Object.entries(config.products as Record<string, ProductConfig>).map(
-      ([id, product]) => toIrProduct(id, product, config.meters)
+    products: Object.entries(config.products).map(([id, product]) =>
+      toIrProduct(id, product, meters)
     ),
-    invariants: (config.invariants ?? []).map((invariant) =>
-      toIrInvariant(invariant as InvariantConfig)
-    ),
-    overrides: Object.entries(
-      (config.overrides ?? {}) as Record<string, OverrideConfig>
-    ).map(([customer, override]) => toIrOverride(customer, override, config.meters))
+    invariants: (config.invariants ?? []).map((invariant) => toIrInvariant(invariant)),
+    overrides: Object.entries(config.overrides ?? {}).map(([customer, override]) =>
+      toIrOverride(customer, override, meters)
+    )
   }
   const { warnings } = verifyInvariants(ir)
   return { ir, checksum: checksumIr(ir), warnings }

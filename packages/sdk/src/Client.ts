@@ -1,5 +1,5 @@
 import type { BillingIr } from "@void/compiler"
-import type { AiConfig, Money } from "./Config.js"
+import type { TrackOptions } from "./Config.js"
 
 /**
  * A typed client for a void server, bound to one compiled config. Meter,
@@ -14,13 +14,6 @@ export interface ClientOptions {
   readonly fetch?: typeof fetch
 }
 
-export interface TrackOptions {
-  readonly customer?: string
-  readonly properties?: Readonly<Record<string, string | number | boolean>>
-  /** what serving this event cost you — powers margin analytics */
-  readonly cost?: Money
-  readonly timestamp?: string | Date
-}
 
 export interface DeployResult {
   readonly status: "accepted" | "unchanged"
@@ -182,8 +175,6 @@ export interface VoidClient<
   entitlements(customer: string): EntitlementsQuery<EntitlementId>
   /** Shorthand for `entitlements(customer).allowed(entitlement)`. */
   allowed(customer: string, entitlement: EntitlementId): Promise<boolean>
-  /** the config's `ai` section — defaults for models wrapped via `@void/sdk/ai` */
-  readonly ai?: AiConfig<EventName>
 }
 
 interface Wire {
@@ -327,8 +318,7 @@ export const createClient = <
 >(
   ir: BillingIr,
   checksum: string,
-  options: ClientOptions,
-  ai?: AiConfig<EventName>
+  options: ClientOptions
 ): VoidClient<MeterId, EntitlementId, EventName> => {
   const api = wire(options)
   const sendEvents = async (
@@ -373,7 +363,6 @@ export const createClient = <
         return usageSnapshot(body.usage)
       }),
     entitlements,
-    allowed: (customer, entitlement) => entitlements(customer).allowed(entitlement),
-    ...(ai !== undefined ? { ai } : {})
+    allowed: (customer, entitlement) => entitlements(customer).allowed(entitlement)
   }
 }

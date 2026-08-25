@@ -43,7 +43,7 @@ export function CustomerTable({
             <th className={cell}>Customer</th>
             <th className={cell}>Plan</th>
             <th className={cell}>Status</th>
-            <th className={`${cell} text-right`}>Expected this month</th>
+            <th className={`${cell} text-right`}>Expected revenue</th>
             <th className={`${cell} text-right`}>Margin</th>
             <th className={`${cell} w-[130px]`}>Share</th>
           </tr>

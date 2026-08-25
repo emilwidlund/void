@@ -1,6 +1,6 @@
 import { NextResponse } from "next/server"
 import { createTicket } from "../../../lib/tickets"
-import { voidClient } from "../../../lib/void"
+import { voidClient } from "../../../void"
 
 export const dynamic = "force-dynamic"
 

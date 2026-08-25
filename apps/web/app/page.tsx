@@ -162,13 +162,15 @@ export default function Dashboard() {
 
           <div className="grid grid-cols-[repeat(auto-fit,minmax(200px,1fr))] gap-3">
             <div className={kpi}>
-              <div className="text-[13.5px] text-ink-muted">Usage earnings so far</div>
+              <div className="text-[13.5px] text-ink-muted">Usage revenue so far</div>
               <div className="mt-2 text-[32px] text-ink-strong tabular-nums">
                 {formatMinor(spend.totals.accruedMinor, currency)}
               </div>
             </div>
             <div className={kpi}>
-              <div className="text-[13.5px] text-ink-muted">Expected this month</div>
+              <div className="text-[13.5px] text-ink-muted">
+                Expected revenue this month
+              </div>
               <div className="mt-2 text-[32px] text-ink-strong tabular-nums">
                 {formatApprox(spend.totals.projectedMinor, currency)}
               </div>
@@ -182,7 +184,9 @@ export default function Dashboard() {
             {spend.totals.costMinor > 0 ? (
               <>
                 <div className={kpi}>
-                  <div className="text-[13.5px] text-ink-muted">Cost so far</div>
+                  <div className="text-[13.5px] text-ink-muted">
+                    Your costs so far
+                  </div>
                   <div className="mt-2 text-[32px] text-ink-strong tabular-nums">
                     {formatMinor(spend.totals.costMinor, currency)}
                   </div>
@@ -213,8 +217,10 @@ export default function Dashboard() {
 
           <section>
             <h2 className={sectionTitle}>
-              Earnings over time
-              <span className={sectionHint}>usage charges vs reported costs</span>
+              Revenue vs cost
+              <span className={sectionHint}>
+                what customers are billed vs the costs your events report
+              </span>
             </h2>
             <RevenueChart currency={currency} series={revenue} />
           </section>

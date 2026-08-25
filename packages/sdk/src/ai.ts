@@ -1,19 +1,31 @@
 /**
- * `@void/sdk/ai` — first-class AI usage for the Vercel AI SDK / AI Gateway.
+ * `@void/sdk/ai` — AI models as meters, for the Vercel AI SDK / AI Gateway.
  *
- * Wrap any language model with `metered` and every `generateText` /
- * `streamText` call becomes a usage event on the customer's record, with
- * the cost of serving it attached as `_cost` under the hood. Defaults come
- * from the config's `ai` section, so a call site needs nothing but the
- * customer:
+ * Declare a model as a meter with `metered` and connect:
  *
- *   // in defineConfig: ai: { event: "ai.generation", pricing: {...} }
- *   const model = metered(gateway("openai/gpt-4o"), { client: voidClient })
+ *   const config = defineConfig({
+ *     meters: {
+ *       assistant: metered(gateway("openai/gpt-4o")),
+ *     },
+ *     products: { ... },
+ *   })
+ *   const voidClient = config.connect({ endpoint })
  *
- * Cost resolution, first match wins:
+ * The entry compiles to a standard meter (event `ai.assistant`, summing
+ * `total_tokens`) and the client exposes the wrapped model:
+ *
+ *   await generateText({
+ *     model: voidClient.ai.assistant,
+ *     prompt,
+ *     providerOptions: { void: voidOptions({ customer: "acme" }) },
+ *   })
+ *
+ * Every call lands on the customer's record with token counts as properties
+ * and the cost of serving it attached as `_cost`. Cost resolution, first
+ * match wins:
  *   1. the `cost` resolver option (full control, may be async)
  *   2. what the AI Gateway reports for the request (`providerMetadata.gateway`)
- *   3. the `pricing` table (config `ai.pricing`, merged with per-model overrides)
+ *   3. the `pricing` table (per-million-token rates by model id)
  * When none resolves, the event is still tracked — with token counts, just
  * without `_cost`.
  *
@@ -28,28 +40,19 @@ import type {
 } from "@ai-sdk/provider"
 import type { GatewayModelId } from "ai"
 import { wrapLanguageModel } from "ai"
-import type { TrackOptions, VoidClient } from "./Client.js"
 import type {
-  AiConfig,
+  AggregateSpec,
   AiEventProperty,
+  AiMeterConfig,
+  AiTrackTarget,
   Money,
   Suggest,
-  TokenPricing
+  TokenPricing,
+  UnitName
 } from "./Config.js"
 import { money } from "./Config.js"
 
-export type { AiConfig, AiEventProperty, TokenPricing }
-
-/** What the middleware needs from a void client — `VoidClient` satisfies it. */
-export interface TrackClient<EventName extends string = string> {
-  track(name: Suggest<EventName>, options?: TrackOptions): PromiseLike<unknown>
-  /** config-level AI defaults, carried by clients from `defineConfig().connect()` */
-  readonly ai?: AiConfig<EventName>
-}
-
-/** The event names a client's config mentions; `string` for untyped clients. */
-export type ClientEvents<C> =
-  C extends VoidClient<string, string, infer EventName> ? EventName : string
+export type { AiEventProperty, AiMeterConfig, AiTrackTarget, TokenPricing }
 
 export interface TokenUsage {
   readonly inputTokens: number | undefined
@@ -73,13 +76,16 @@ export interface AiCallInfo {
   readonly providerMetadata: SharedV4ProviderMetadata | undefined
 }
 
-export interface MeteredOptions<C extends TrackClient = TrackClient> {
-  readonly client: C
-  /** event tracked for every call; defaults to the config's `ai.event` */
-  readonly event?: Suggest<ClientEvents<C>>
+/** Options for `metered` — how one AI meter tracks, aggregates and prices. */
+export interface MeteredOptions {
+  /** usage event tracked per call; defaults to `ai.<meter key>` */
+  readonly event?: string
+  /** how the meter aggregates those events; defaults to `{ sum: "total_tokens" }` */
+  readonly aggregate?: AggregateSpec<AiEventProperty>
+  readonly unit?: UnitName
   /** default customer; a function can pull it from request context per call */
   readonly customer?: string | ((info: AiCallInfo) => string | undefined)
-  /** extra event properties, merged over the config's `ai.properties` */
+  /** extra event properties, merged under the automatic ones */
   readonly properties?:
     | Readonly<Record<string, string | number | boolean>>
     | ((info: AiCallInfo) => Readonly<Record<string, string | number | boolean>>)
@@ -87,10 +93,142 @@ export interface MeteredOptions<C extends TrackClient = TrackClient> {
   readonly cost?: (
     info: AiCallInfo
   ) => Money | undefined | PromiseLike<Money | undefined>
-  /** per-model rates merged over the config's `ai.pricing` ("*" as wildcard) */
+  /** fallback rates keyed by model id ("openai/gpt-4o"), "*" as wildcard */
   readonly pricing?: Readonly<Record<string, TokenPricing>>
   /** tracking failures never break the model call; they land here (default: console.warn) */
   readonly onTrackError?: (error: unknown, info: AiCallInfo) => void
+  /**
+   * Middleware logging: `true` for the built-in console logger, a function
+   * for a custom structured sink, `false` to force off. When omitted, the
+   * console logger turns on while `VOID_AI_DEBUG` is set in the environment.
+   */
+  readonly log?: boolean | AiLogger
+}
+
+/** How a call's `_cost` was resolved. */
+export type AiCostSource = "resolver" | "gateway" | "pricing" | "none"
+
+/** Everything the middleware sees, as structured lifecycle events. */
+export type AiLogEvent =
+  | {
+      readonly type: "call"
+      readonly event: string
+      readonly model: string
+      readonly provider: string
+      readonly streamed: boolean
+      /** truncated text of the last prompt message */
+      readonly prompt?: string
+      readonly customer?: string
+    }
+  | { readonly type: "finish"; readonly event: string; readonly info: AiCallInfo }
+  | {
+      readonly type: "cost"
+      readonly event: string
+      readonly source: AiCostSource
+      readonly cost?: Money
+    }
+  | {
+      readonly type: "track"
+      readonly event: string
+      readonly customer?: string
+      readonly properties: Readonly<Record<string, string | number | boolean>>
+      readonly cost?: Money
+    }
+  | { readonly type: "skip"; readonly event: string; readonly reason: "track: false" }
+  | {
+      readonly type: "abort"
+      readonly event: string
+      readonly reason: "stream ended without a finish part — nothing recorded"
+    }
+  | { readonly type: "error"; readonly event: string; readonly error: unknown }
+
+export type AiLogger = (entry: AiLogEvent) => void
+
+const formatMoney = (value: Money): string => {
+  // display only — the tracked cost stays exact
+  const amount = Number((value.minor ? value.amount / 100 : value.amount).toFixed(6))
+  return value.currency === "USD" ? `$${amount}` : `${amount} ${value.currency}`
+}
+
+/** The built-in sink: one compact console line per lifecycle event. */
+export const consoleAiLogger: AiLogger = (entry) => {
+  const tag = `[void/ai] ${entry.event}`
+  switch (entry.type) {
+    case "call":
+      console.log(
+        `${tag} ← ${entry.model} (${entry.provider})${entry.streamed ? " stream" : ""}` +
+          `${entry.customer !== undefined ? ` customer=${entry.customer}` : ""}` +
+          `${entry.prompt !== undefined ? ` "${entry.prompt}"` : ""}`
+      )
+      break
+    case "finish": {
+      const { usage, finishReason, durationMs } = entry.info
+      console.log(
+        `${tag} finished: ${finishReason} · in ${usage.inputTokens ?? "?"}` +
+          `${usage.cachedInputTokens !== undefined ? ` (cached ${usage.cachedInputTokens})` : ""}` +
+          ` · out ${usage.outputTokens ?? "?"} · ${durationMs}ms`
+      )
+      break
+    }
+    case "cost":
+      console.log(
+        entry.cost !== undefined
+          ? `${tag} cost ${formatMoney(entry.cost)} (${entry.source})`
+          : `${tag} no cost resolved`
+      )
+      break
+    case "track":
+      console.log(
+        `${tag} → track${entry.customer !== undefined ? ` customer=${entry.customer}` : ""}` +
+          `${entry.cost !== undefined ? ` cost=${formatMoney(entry.cost)}` : ""} ` +
+          JSON.stringify(entry.properties)
+      )
+      break
+    case "skip":
+      console.log(`${tag} skipped (${entry.reason})`)
+      break
+    case "abort":
+      console.log(`${tag} ${entry.reason}`)
+      break
+    case "error":
+      console.warn(`${tag} failed to track:`, entry.error)
+      break
+  }
+}
+
+const resolveLogger = (log: boolean | AiLogger | undefined): AiLogger | undefined => {
+  if (typeof log === "function") return log
+  if (log === true) return consoleAiLogger
+  if (log === false) return undefined
+  return typeof process !== "undefined" && process.env?.["VOID_AI_DEBUG"]
+    ? consoleAiLogger
+    : undefined
+}
+
+/** Text of the last prompt message, truncated — for the `call` log entry. */
+const promptPreview = (prompt: unknown): string | undefined => {
+  try {
+    const messages = prompt as ReadonlyArray<{ readonly content: unknown }>
+    const content = messages[messages.length - 1]?.content
+    const text =
+      typeof content === "string"
+        ? content
+        : Array.isArray(content)
+          ? content
+              .filter(
+                (part): part is { type: "text"; text: string } =>
+                  typeof part === "object" &&
+                  part !== null &&
+                  (part as { type?: unknown }).type === "text"
+              )
+              .map((part) => part.text)
+              .join(" ")
+          : undefined
+    if (text === undefined || text.length === 0) return undefined
+    return text.length > 120 ? `${text.slice(0, 117)}...` : text
+  } catch {
+    return undefined
+  }
 }
 
 /** Per-call overrides, passed as `providerOptions: { void: voidOptions({...}) }`. */
@@ -107,11 +245,9 @@ export const voidOptions = (options: VoidCallOptions): JSONObject =>
   options as unknown as JSONObject
 
 /**
- * Typed pricing table for the config's `ai.pricing`: AI Gateway model ids
+ * Typed pricing table for `metered`'s `pricing` option: AI Gateway model ids
  * autocomplete, `"*"` is the wildcard, and any other model id string is
  * still accepted (for plain providers whose ids the gateway doesn't know).
- *
- *   ai: { event: "ai.generation", pricing: modelPricing({ "openai/gpt-4o": {...} }) }
  */
 export const modelPricing = (
   table: Readonly<Partial<Record<GatewayModelId | "*", TokenPricing>>>
@@ -134,7 +270,7 @@ const toTokenUsage = (usage: LanguageModelV4Usage): TokenUsage => {
 }
 
 // typed by AiEventProperty so the emitted keys can't drift from what
-// AI-event meters are offered in the config
+// AI meters' `aggregate` option suggests
 const autoProperties = (
   info: AiCallInfo
 ): Partial<Record<AiEventProperty, string | number | boolean>> => {
@@ -211,31 +347,31 @@ interface FinishedCall {
   readonly durationMs: number
 }
 
-/**
- * The middleware itself, for composing with other middlewares via
- * `wrapLanguageModel`. Most callers want `metered` instead.
- */
-export const meteredMiddleware = <C extends TrackClient>(
-  options: MeteredOptions<C>
-): LanguageModelV4Middleware => {
-  const defaults = options.client.ai
-  const event = options.event ?? defaults?.event
-  if (event === undefined) {
-    throw new Error(
-      "@void/sdk/ai: no event to track — declare `ai: { event }` in defineConfig or pass `event`"
-    )
-  }
-  const pricing =
-    defaults?.pricing !== undefined || options.pricing !== undefined
-      ? { ...defaults?.pricing, ...options.pricing }
-      : undefined
+/** `MeteredOptions` with the binding resolved — what the middleware runs on. */
+export interface MeteredMiddlewareOptions
+  extends Omit<MeteredOptions, "event" | "aggregate" | "unit"> {
+  readonly client: AiTrackTarget
+  readonly event: string
+}
 
+/**
+ * The middleware itself, for composing manually via `wrapLanguageModel`.
+ * Most callers declare `metered(...)` meters and use `client.ai.<key>`.
+ */
+export const meteredMiddleware = (
+  options: MeteredMiddlewareOptions
+): LanguageModelV4Middleware => {
+  const log = resolveLogger(options.log)
   // per-call overrides survive transformParams via the params object identity
   const perCall = new WeakMap<object, VoidCallOptions>()
 
   const report = async (call: FinishedCall): Promise<void> => {
     const overrides = perCall.get(call.callOptions)
-    if (overrides?.track === false) return
+    const event = overrides?.event ?? options.event
+    if (overrides?.track === false) {
+      log?.({ type: "skip", event, reason: "track: false" })
+      return
+    }
     const info: AiCallInfo = {
       model: call.responseModel ?? call.model.modelId,
       provider: call.model.provider,
@@ -245,11 +381,20 @@ export const meteredMiddleware = <C extends TrackClient>(
       durationMs: call.durationMs,
       providerMetadata: call.providerMetadata
     }
+    log?.({ type: "finish", event, info })
     try {
-      const cost =
-        (options.cost !== undefined ? await options.cost(info) : undefined) ??
-        gatewayCost(info.providerMetadata) ??
-        tableCost(pricing, info)
+      let source: AiCostSource = "none"
+      let cost = options.cost !== undefined ? await options.cost(info) : undefined
+      if (cost !== undefined) source = "resolver"
+      else {
+        cost = gatewayCost(info.providerMetadata)
+        if (cost !== undefined) source = "gateway"
+        else {
+          cost = tableCost(options.pricing, info)
+          if (cost !== undefined) source = "pricing"
+        }
+      }
+      log?.({ type: "cost", event, source, ...(cost !== undefined ? { cost } : {}) })
       const customer =
         overrides?.customer ??
         (typeof options.customer === "function"
@@ -259,20 +404,48 @@ export const meteredMiddleware = <C extends TrackClient>(
         typeof options.properties === "function"
           ? options.properties(info)
           : options.properties
-      await options.client.track(overrides?.event ?? event, {
-        properties: {
-          ...autoProperties(info),
-          ...defaults?.properties,
-          ...configured,
-          ...overrides?.properties
-        },
+      const properties = {
+        ...autoProperties(info),
+        ...configured,
+        ...overrides?.properties
+      }
+      await options.client.track(event, {
+        properties,
+        ...(customer !== undefined ? { customer } : {}),
+        ...(cost !== undefined ? { cost } : {})
+      })
+      log?.({
+        type: "track",
+        event,
+        properties,
         ...(customer !== undefined ? { customer } : {}),
         ...(cost !== undefined ? { cost } : {})
       })
     } catch (error) {
+      log?.({ type: "error", event, error })
       if (options.onTrackError !== undefined) options.onTrackError(error, info)
-      else console.warn("[@void/sdk/ai] failed to track usage event:", error)
+      else if (log === undefined)
+        console.warn("[@void/sdk/ai] failed to track usage event:", error)
     }
+  }
+
+  const logCall = (
+    params: { readonly prompt: unknown },
+    model: { readonly modelId: string; readonly provider: string },
+    streamed: boolean
+  ): void => {
+    if (log === undefined) return
+    const overrides = perCall.get(params)
+    const preview = promptPreview(params.prompt)
+    log({
+      type: "call",
+      event: overrides?.event ?? options.event,
+      model: model.modelId,
+      provider: model.provider,
+      streamed,
+      ...(preview !== undefined ? { prompt: preview } : {}),
+      ...(overrides?.customer !== undefined ? { customer: overrides.customer } : {})
+    })
   }
 
   return {
@@ -290,6 +463,7 @@ export const meteredMiddleware = <C extends TrackClient>(
 
     wrapGenerate: async ({ doGenerate, params, model }) => {
       const started = Date.now()
+      logCall(params, model, false)
       const result = await doGenerate()
       await report({
         callOptions: params,
@@ -306,6 +480,7 @@ export const meteredMiddleware = <C extends TrackClient>(
 
     wrapStream: async ({ doStream, params, model }) => {
       const started = Date.now()
+      logCall(params, model, true)
       const { stream, ...rest } = await doStream()
       let finish: Extract<LanguageModelV4StreamPart, { type: "finish" }> | undefined
       let responseModel: string | undefined
@@ -321,7 +496,14 @@ export const meteredMiddleware = <C extends TrackClient>(
             },
             // aborted/errored streams never see a finish part and aren't recorded
             async flush() {
-              if (finish === undefined) return
+              if (finish === undefined) {
+                log?.({
+                  type: "abort",
+                  event: perCall.get(params)?.event ?? options.event,
+                  reason: "stream ended without a finish part — nothing recorded"
+                })
+                return
+              }
               await report({
                 callOptions: params,
                 model,
@@ -341,22 +523,45 @@ export const meteredMiddleware = <C extends TrackClient>(
 }
 
 type WrappableModel = Parameters<typeof wrapLanguageModel>[0]["model"]
+type WrappedModel = ReturnType<typeof wrapLanguageModel>
 
 /**
- * Wrap a language model so every call lands on the customer's record:
+ * Declare an AI model as a meter:
  *
- *   const model = metered(gateway("openai/gpt-4o"), { client: voidClient })
+ *   meters: {
+ *     assistant: metered(gateway("openai/gpt-4o")),
+ *   }
  *
- * Per-request attribution rides on providerOptions:
- *
- *   await generateText({
- *     model,
- *     prompt,
- *     providerOptions: { void: voidOptions({ customer: "acme" }) },
- *   })
+ * The entry compiles to one standard meter per token class —
+ * `assistant.input_tokens`, `assistant.cached_input_tokens` and
+ * `assistant.output_tokens`, all filtering `ai.assistant` (override with
+ * `event`) — because token classes are priced differently; an explicit
+ * `aggregate` compiles to a single meter named `assistant` instead.
+ * `connect()` surfaces the wrapped, usage-tracked model as
+ * `client.ai.assistant`. Price the meters like any others (`usage:
+ * { "assistant.output_tokens": { perUnit: ... } }`), gate them with
+ * entitlements, hold them to invariants.
  */
-export const metered = <C extends TrackClient>(
+export const metered = <const O extends MeteredOptions = Record<never, never>>(
   model: WrappableModel,
-  options: MeteredOptions<C>
-): ReturnType<typeof wrapLanguageModel> =>
-  wrapLanguageModel({ model, middleware: meteredMiddleware(options) })
+  // `O & MeteredOptions` (not bare `O`): the concrete half keeps editor
+  // completions alive inside the literal while `O` captures it
+  options?: O & MeteredOptions
+): AiMeterConfig<WrappedModel> & Pick<O, Extract<keyof O, "event" | "aggregate">> => {
+  const meter: AiMeterConfig<WrappedModel> = {
+    kind: "ai",
+    ...(options?.event !== undefined ? { event: options.event } : {}),
+    ...(options?.aggregate !== undefined ? { aggregate: options.aggregate } : {}),
+    ...(options?.unit !== undefined ? { unit: options.unit } : {}),
+    bind: (client, event) =>
+      wrapLanguageModel({
+        model,
+        middleware: meteredMiddleware({ ...options, client, event })
+      })
+  }
+  return meter as AiMeterConfig<WrappedModel> &
+    Pick<O, Extract<keyof O, "event" | "aggregate">>
+}
+
+/** A suggestion-friendly alias kept for aggregate keys in `metered` options. */
+export type { AggregateSpec, Suggest }

@@ -68,7 +68,7 @@ export function RevenueChart({
             labelFormatter={(t) => new Date(Number(t)).toLocaleTimeString()}
             formatter={(value, name) => [
               formatMinor(Number(value), currency),
-              name === "costMinor" ? "cost" : "earned"
+              name === "costMinor" ? "your cost" : "revenue"
             ]}
           />
           <Area

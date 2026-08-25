@@ -221,34 +221,47 @@ proven when `defineConfig` runs — a customer override priced below a
 declared floor throws before anything deploys, with `else: "warn"` violations
 collected on `billing.warnings` instead.
 
-### AI usage (`@void/sdk/ai`)
+### AI models as meters (`@void/sdk/ai`)
 
-AI is first class: declare an `ai` section in the config and wrap any
-[Vercel AI SDK](https://ai-sdk.dev) model — AI Gateway models included — with
-`metered`. Every `generateText` / `streamText` call then lands on the
-customer's record with token counts as properties and the cost of serving it
-attached as `_cost`, automatically (gateway-reported cost when present, else
-the config's `ai.pricing` rates). Requires the optional `ai` peer dependency;
-see `examples/void.ts` for the full walkthrough.
+AI is first class: declare a [Vercel AI SDK](https://ai-sdk.dev) model — AI
+Gateway models included — as a meter with `metered`, and the connected client
+exposes it wrapped and usage-tracked. Every `generateText` / `streamText`
+call lands on the customer's record with token counts as properties and the
+cost of serving it attached as `_cost`, automatically (gateway-reported cost
+when present, else the `pricing` rates). Requires the optional `ai` peer
+dependency; see `examples/void.ts` for the full walkthrough.
 
 ```ts
 const config = defineConfig({
-  meters: { ai_tokens: { filter: on("ai.generation"), aggregate: { sum: "total_tokens" } } },
-  //                     ^ the ai event's meters autocomplete the emitted keys
-  ai: { event: "ai.generation", pricing: modelPricing({ "openai/gpt-4o": { input: usd(2.5), output: usd(10) } }) },
-  //           ^ declared events              ^ AI Gateway model ids autocomplete
-  products: { pro: { name: "Pro", usage: { ai_tokens: { margin: "40%" } } } },
+  meters: {
+    // compiles to assistant.input_tokens / .cached_input_tokens / .output_tokens,
+    // all filtering the derived event `ai.assistant` — token classes price
+    // differently, so there is deliberately no single-sum default
+    assistant: metered(gateway("openai/gpt-4o"), {
+      pricing: modelPricing({ "openai/gpt-4o": { input: usd(2.5), output: usd(10) } }),
+    }), //                                        ^ AI Gateway model ids autocomplete
+  },
+  products: {
+    pro: {
+      name: "Pro",
+      usage: { "assistant.output_tokens": { perUnit: usd(0.0000105) } },
+      //        ^ expanded meter ids autocomplete here, in entitlements & invariants
+    },
+  },
 })
 
 const voidClient = config.connect({ endpoint })
-const model = metered(gateway("openai/gpt-4o"), { client: voidClient })
 
 await generateText({
-  model,
+  model: voidClient.ai.assistant, // the bound model lives on the client
   prompt,
   providerOptions: { void: voidOptions({ customer: "acme" }) },
 })
 ```
+
+To watch the data flowing through, pass `log: true` to `metered` (one console
+line per call / finish / cost-resolution / tracked event), a function for a
+structured sink, or set `VOID_AI_DEBUG=1` in the environment.
 
 ## Workspace
 

@@ -1,7 +1,7 @@
 # helpdesk — a support ticketing app billed by void
 
 A Next.js demo showing the whole void stack in one product: the billing
-model is code (`billing.ts`), the app talks to a **local proxy** (instant
+model is code (`void.ts`), the app talks to a **local proxy** (instant
 entitlement/enforcement checks, durable store-and-forward), and the parent
 server + dashboard run alongside.
 
@@ -16,7 +16,7 @@ One command boots everything, in order:
 
 1. **parent void server** on :4000 — the "hosted" billing backend
 2. **billing dashboard** on :3001 — live earnings, margins, invariants
-3. **deploys `billing.ts`** to the parent (checksum-idempotent)
+3. **deploys `void.ts`** to the parent (checksum-idempotent)
 4. **void proxy** on :4010 — the merchant sidecar; journal in `.void-proxy/`
 5. **the helpdesk** on http://localhost:3005
 
@@ -24,10 +24,14 @@ One command boots everything, in order:
 
 - **Open a ticket** → `ticket.opened` starts the `ticket_resolution` outcome
   chain for that ticket id.
-- **🤖 AI reply** → `agent.reply` with a token count and its `_cost`
-  attached; the customer is billed the `ai_tokens` meter at a **70% margin**
-  over the model cost. Gated on the `ai_agent` entitlement and a live
-  `reply_quota` (200/mo — acme negotiated 500).
+- **🤖 AI reply** → a real model call through `voidClient.ai.agent` — the
+  `agent` meter declared with `metered(...)` in `void.ts` tracks `ai.agent`
+  with token counts and its `_cost` automatically, and expands into
+  per-token-class meters (`agent.input_tokens` / `.cached_input_tokens` /
+  `.output_tokens`); each reply is billed at a **70% margin** over the model
+  cost. Gated on the `ai_agent` entitlement and a live `reply_quota` (200/mo
+  — acme negotiated 500). Runs offline on a simulated model; set
+  `AI_GATEWAY_API_KEY` to route it through the Vercel AI Gateway for real.
 - **Resolve** → completes the chain: **$1.50 per resolved ticket** ($1 for
   acme, via their override). Watch it land on the dashboard.
 - **Reopen** → fails the chain and unwinds exactly that ticket's charge —

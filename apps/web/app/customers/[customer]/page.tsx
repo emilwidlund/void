@@ -122,7 +122,7 @@ export default function CustomerPage() {
               </div>
             </div>
             <div className={kpi}>
-              <div className={kpiLabel}>Usage charges so far</div>
+              <div className={kpiLabel}>Usage revenue so far</div>
               <div className={kpiValue}>{formatMinor(detail.accruedMinor, currency)}</div>
             </div>
             <div className={kpi}>
@@ -136,7 +136,7 @@ export default function CustomerPage() {
             {detail.costMinor > 0 ? (
               <>
                 <div className={kpi}>
-                  <div className={kpiLabel}>Cost so far</div>
+                  <div className={kpiLabel}>Your cost to serve them</div>
                   <div className={kpiValue}>{formatMinor(detail.costMinor, currency)}</div>
                 </div>
                 <div className={kpi}>
@@ -173,8 +173,10 @@ export default function CustomerPage() {
 
           <section>
             <h2 className={sectionTitle}>
-              Their usage charges
-              <span className={sectionHint}>as they accrued over time</span>
+              Revenue vs cost
+              <span className={sectionHint}>
+                what they&apos;re billed vs what serving them costs you
+              </span>
             </h2>
             <RevenueChart currency={currency} series={revenue} />
           </section>
@@ -194,9 +196,10 @@ export default function CustomerPage() {
                     <th className={cell}>Meter</th>
                     <th className={cell}>Usage</th>
                     <th className={`${cell} text-right`}>Allowance used</th>
-                    <th className={`${cell} text-right`}>Per unit</th>
-                    <th className={`${cell} text-right`}>Charged</th>
-                    <th className={`${cell} text-right`}>Expected</th>
+                    <th className={`${cell} text-right`}>Pricing</th>
+                    <th className={`${cell} text-right`}>Your cost</th>
+                    <th className={`${cell} text-right`}>Revenue</th>
+                    <th className={`${cell} text-right`}>Expected revenue</th>
                   </tr>
                 </thead>
                 <tbody>
@@ -229,7 +232,16 @@ export default function CustomerPage() {
                         )}
                       </td>
                       <td className={`${cell} text-right text-ink-muted`}>
-                        {formatMinor(line.perUnitMinor, currency)}
+                        {line.marginTarget !== null
+                          ? `cost-plus, ${Math.round(line.marginTarget * 100)}% margin`
+                          : `${formatMinor(line.perUnitMinor, currency)} / unit`}
+                      </td>
+                      <td className={`${cell} text-right text-ink-muted`}>
+                        {line.costMinor > 0 ? (
+                          formatMinor(line.costMinor, currency)
+                        ) : (
+                          <span className="text-ink-faint">—</span>
+                        )}
                       </td>
                       <td className={`${cell} text-right`}>
                         {formatMinor(line.accruedMinor, currency)}

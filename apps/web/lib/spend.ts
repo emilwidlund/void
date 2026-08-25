@@ -36,8 +36,10 @@ export interface MeterSpendLine {
   /** fraction of the included allowance consumed (may exceed 1); null when nothing is included */
   readonly includedUsed: number | null
   readonly perUnitMinor: number
-  /** spend accrued so far on units beyond the allowance, in minor units */
+  /** revenue accrued so far on units beyond the allowance, in minor units */
   readonly accruedMinor: number
+  /** reported `_cost` attributed to this meter so far, in minor units */
+  readonly costMinor: number
   readonly projectedUnits: number
   readonly projectedMinor: number
   /** target gross margin for cost-derived (`margin`) pricing, else null */
@@ -159,6 +161,11 @@ export const computeSpend = (
       (price) => price.type === "recurring"
     )
 
+    const meterCostFor = (meter: string) =>
+      meterCosts
+        .filter((mc) => mc.meter === meter && mc.customer === customer)
+        .reduce((sum, mc) => sum + mc.cost_minor, 0)
+
     for (const product of ir.products) {
       for (const listed of product.prices) {
         if (listed.type === "recurring") continue
@@ -184,6 +191,7 @@ export const computeSpend = (
               price.included_units > 0 ? pricedUnits / price.included_units : null,
             perUnitMinor,
             accruedMinor: Math.max(0, pricedUnits - price.included_units) * perUnitMinor,
+            costMinor: meterCostFor(price.meter),
             projectedUnits,
             projectedMinor: Math.max(0, projectedUnits - price.included_units) * perUnitMinor,
             marginTarget: null
@@ -192,9 +200,7 @@ export const computeSpend = (
         }
         // Cost-derived pricing: charge = attributed cost / (1 - margin), so
         // the configured gross margin holds whatever the units cost.
-        const attributedCost = meterCosts
-          .filter((mc) => mc.meter === price.meter && mc.customer === customer)
-          .reduce((sum, mc) => sum + mc.cost_minor, 0)
+        const attributedCost = meterCostFor(price.meter)
         if (row === undefined && attributedCost === 0) continue
         attributed.set(product.id, product)
         const accrued = attributedCost / (1 - price.margin)
@@ -209,6 +215,7 @@ export const computeSpend = (
           includedUsed: null,
           perUnitMinor: units > 0 ? accrued / units : 0,
           accruedMinor: accrued,
+          costMinor: attributedCost,
           projectedUnits: units * runRate,
           projectedMinor: accrued * runRate,
           marginTarget: price.margin
