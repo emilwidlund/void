@@ -1,4 +1,4 @@
-import type { BillingIr } from "@void/compiler"
+import type { BillingIr, IrFilter } from "@void/compiler"
 import { formatMinor } from "./format"
 import type { RevenuePoint } from "./series"
 import type { SpendOverview } from "./spend"
@@ -41,7 +41,25 @@ export const overageCustomers = (spend: SpendOverview): ReadonlyArray<string> =>
     )
     .map((customer) => customer.customer)
 
-/** Meters with recorded usage that no product prices — unmonetized activity. */
+/** Event names a filter matches on (`event.name == "..."` comparisons). */
+const eventsOf = (filter: IrFilter | null): ReadonlyArray<string> => {
+  if (filter === null) return []
+  if (filter.type === "comparison") {
+    return filter.property === "event.name" &&
+      filter.op === "eq" &&
+      typeof filter.value === "string"
+      ? [filter.value]
+      : []
+  }
+  return filter.operands.flatMap((operand) => eventsOf(operand))
+}
+
+/**
+ * Meters with recorded usage that no product prices — unmonetized activity.
+ * A meter whose events are already priced through a sibling meter (e.g. AI
+ * token-class meters next to a margin-priced meter over the same event) is
+ * analytics, not lost revenue, and isn't flagged.
+ */
 export const unpricedMeters = (
   usage: ReadonlyArray<UsageRow>,
   ir: BillingIr
@@ -53,7 +71,17 @@ export const unpricedMeters = (
       )
     )
   )
-  return [...new Set(usage.map((row) => row.meter))].filter((meter) => !priced.has(meter))
+  const meterEvents = new Map(ir.meters.map((meter) => [meter.id, eventsOf(meter.filter)]))
+  const pricedEvents = new Set(
+    [...priced].flatMap((meter) => meterEvents.get(meter) ?? [])
+  )
+  return [...new Set(usage.map((row) => row.meter))].filter((meter) => {
+    if (priced.has(meter)) return false
+    const events = meterEvents.get(meter) ?? []
+    const monetizedElsewhere =
+      events.length > 0 && events.every((event) => pricedEvents.has(event))
+    return !monetizedElsewhere
+  })
 }
 
 export const highlights = (

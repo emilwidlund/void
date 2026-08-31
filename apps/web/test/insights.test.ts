@@ -52,6 +52,45 @@ describe("insights", () => {
     expect(unpricedMeters(usage, ir)).toEqual(["logins"])
   })
 
+  it("doesn't flag meters whose event is priced through a sibling meter", () => {
+    const eventFilter = {
+      type: "comparison" as const,
+      property: "event.name",
+      op: "eq" as const,
+      value: "ai.agent"
+    }
+    const aiIr: BillingIr = {
+      ...ir,
+      meters: [
+        // priced (margin) meter and analytics meters over the same event
+        { id: "agent_replies", filter: eventFilter, aggregation: { type: "count" }, unit: null, reverse: null },
+        {
+          id: "agent.input_tokens",
+          filter: eventFilter,
+          aggregation: { type: "sum", property: "event.input_tokens" },
+          unit: null,
+          reverse: null
+        },
+        // a genuinely dead meter on a different event
+        { id: "logins", filter: { ...eventFilter, value: "user.login" }, aggregation: { type: "count" }, unit: null, reverse: null }
+      ],
+      products: [
+        {
+          id: "pro",
+          name: "Pro",
+          prices: [{ type: "metered_margin", meter: "agent_replies", margin: 0.5 }],
+          entitlements: []
+        }
+      ]
+    }
+    const usage = [
+      { ...row("acme", 3), meter: "agent_replies" },
+      { ...row("acme", 500), meter: "agent.input_tokens" },
+      { ...row("acme", 2), meter: "logins" }
+    ]
+    expect(unpricedMeters(usage, aiIr)).toEqual(["logins"])
+  })
+
   it("computes pace change from the recent window", () => {
     // steady 1 unit/minute for 30min, then 3 units/minute: recent pace up
     const points = Array.from({ length: 40 }, (_, i) => ({

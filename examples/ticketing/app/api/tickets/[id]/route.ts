@@ -6,14 +6,6 @@ import { voidClient } from "../../../../void"
 
 export const dynamic = "force-dynamic"
 
-/**
- * Ticket actions. Every one maps to a billing event:
- *   close (solved)  -> completes the ticket_resolution outcome (+$1.50/$1)
- *   reopen          -> fails the chain, unwinding that ticket's charge
- *   agent           -> a real model call through `voidClient.ai.agent`, which
- *                      tracks `ai.agent` with token counts and `_cost` under
- *                      the hood — gated on the ai_agent flag and the quota
- */
 export async function POST(
   request: Request,
   context: { params: Promise<{ id: string }> }
@@ -50,9 +42,11 @@ export async function POST(
   // action === "agent": entitlement-gated AI reply.
   // One fetch answers both gates; the checks themselves are sync.
   const entitlements = await voidClient.entitlements(customer)
+
   if (!entitlements.allowed("ai_agent")) {
     return NextResponse.json({ error: "AI agent not in this plan" }, { status: 402 })
   }
+
   if (!entitlements.allowed("reply_quota")) {
     return NextResponse.json(
       { error: "monthly AI reply quota exhausted" },
@@ -65,13 +59,13 @@ export async function POST(
   const lastFromCustomer = [...ticket.messages]
     .reverse()
     .find((message) => message.from === "customer")
+
   const { text, usage } = await generateText({
     model: voidClient.ai.agent,
     system:
       "You are a support agent for a developer tool. Reply concisely with a concrete fix.",
-    prompt: `Ticket: ${ticket.subject}${
-      lastFromCustomer !== undefined ? `\nCustomer: ${lastFromCustomer.text}` : ""
-    }`,
+    prompt: `Ticket: ${ticket.subject}${lastFromCustomer !== undefined ? `\nCustomer: ${lastFromCustomer.text}` : ""
+      }`,
     providerOptions: {
       void: voidOptions({ customer, properties: { ticket_id: ticket.id } }),
     },

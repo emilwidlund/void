@@ -1,16 +1,3 @@
-/**
- * The Pro plan as code — void's TypeScript frontend, now real.
- *
- * `defineConfig` compiles this config to the exact same checksummed IR as
- * `pro.void` (see @void/sdk's tests, which assert byte-identical output), so
- * `.void` files and `.ts` configs share one deploy pipeline. Static
- * invariants are proven at definition time: an override priced below a
- * declared floor makes `defineConfig` throw before anything deploys.
- *
- * Run it against a local server (`pnpm dev`) with:
- *   pnpm --filter @void/sdk build && node --input-type=module -e "..."
- * or import it from any app in the workspace.
- */
 import { defineConfig, money, on, usd, usdCents } from "@void/sdk"
 
 const billing = defineConfig({
